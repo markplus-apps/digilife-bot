@@ -1549,7 +1549,8 @@ Setelah transfer, mohon konfirmasi ya! 🙏🏻`;
 
     // Jika intent adalah price_inquiry → LANGSUNG ke GPT, jangan intercept dengan availability check
     // Ini mencegah "berapa harga netflix?" dijawab dengan FULL/KOSONG
-    if (intent.intent === 'price_inquiry') {
+    // HANYA untuk registered customer
+    if (intent.intent === 'price_inquiry' && isRegisteredCustomer) {
       console.log(`💰 Price inquiry detected → routing to GPT with full pricing data`);
 
       // Build pricing context dari pricingData — filter by product jika intent.product diketahui
@@ -1588,8 +1589,8 @@ Setelah transfer, mohon konfirmasi ya! 🙏🏻`;
       responseText = renewalReminder ? renewalReminder + priceResponse : priceResponse;
     }
 
-    // Availability check: hanya untuk pesan yang bukan price_inquiry
-    const detectedProducts = intent.intent !== 'price_inquiry'
+    // Availability check: hanya untuk pesan yang bukan price_inquiry DAN hanya untuk registered customer
+    const detectedProducts = (intent.intent !== 'price_inquiry' && isRegisteredCustomer)
       ? detectProductFromMessage(messageText, availability)
       : null;
 
