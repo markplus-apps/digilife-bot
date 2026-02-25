@@ -248,7 +248,7 @@ async function loadGroupData() {
 
   try {
     const result = await pgPool.query(
-      `SELECT subscription, code, email, password
+      `SELECT subscription, code, email, password, max_slots
        FROM groups
        ORDER BY subscription`
     );
@@ -257,9 +257,10 @@ async function loadGroupData() {
     result.rows.forEach(row => {
       if (row.subscription) {
         groups[row.subscription] = {
-          code:     row.code     || '',
-          email:    row.email    || '',
-          password: row.password || '',
+          code:      row.code      || '',
+          email:     row.email     || '',
+          password:  row.password  || '',
+          max_slots: parseInt(row.max_slots) || 5,
         };
       }
     });
@@ -1010,44 +1011,35 @@ function queryPricing(pricingData, product, duration) {
 // Check product availability berdasarkan Customer sheet Slot data
 async function checkProductAvailability(groupData, pricingData, customerData) {
   try {
-    // Build subscription slot status dari Customer data
-    // Cukup SUM kolom Slot untuk setiap subscription (SIMPLE!)
-    const subscriptionSlots = {};
-    
-    // Sum slots untuk setiap subscription
+    // Hitung jumlah customer aktif per subscription group
+    const customerCountPerGroup = {};
     for (const customer of customerData) {
       const subName = customer.subscription;
-      const slots = parseInt(customer.slot) || 0; // Column L: Slot
-      
       if (subName && subName.trim()) {
-        if (!subscriptionSlots[subName]) {
-          subscriptionSlots[subName] = 0; // Initialize dengan 0
-        }
-        subscriptionSlots[subName] += slots; // Sum slot
+        customerCountPerGroup[subName] = (customerCountPerGroup[subName] || 0) + 1;
       }
     }
-    
-    // Build availability map
+
+    // Build availability map: available jika max_slots - filled > 0
     const availability = {};
-    
-    // Untuk setiap subscription di group, cek slot availability
     for (const groupName of Object.keys(groupData)) {
       const group = groupData[groupName];
-      const totalSlots = subscriptionSlots[groupName] || 0;
-      
-      const isAvailable = totalSlots > 0;
-      
+      const maxSlots  = group.max_slots || 5;
+      const filled    = customerCountPerGroup[groupName] || 0;
+      const freeSlots = maxSlots - filled;
+      const isAvailable = freeSlots > 0;
+
       availability[groupName] = {
-        available: isAvailable,
-        reason: isAvailable ? `${totalSlots} slot tersedia` : 'Slot kosong',
-        totalSlots: totalSlots,
+        available:  isAvailable,
+        reason:     isAvailable ? `${freeSlots} slot tersedia (${filled}/${maxSlots})` : `FULL (${filled}/${maxSlots})`,
+        totalSlots: freeSlots,
         groupInfo: {
-          email: group.email || 'N/A',
-          password: group.password ? '***' : 'N/A'
-        }
+          email:    group.email    || 'N/A',
+          password: group.password ? '***' : 'N/A',
+        },
       };
     }
-    
+
     return availability;
   } catch(error) {
     console.error('Error checking availability:', error.message);
