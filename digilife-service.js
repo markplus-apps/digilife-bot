@@ -250,6 +250,7 @@ async function loadGroupData() {
     const result = await pgPool.query(
       `SELECT subscription, code, email, password, max_slots
        FROM groups
+       WHERE COALESCE(LOWER(status), 'active') != 'inactive'
        ORDER BY subscription`
     );
 
