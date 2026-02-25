@@ -8,6 +8,7 @@ const fs = require('fs');
 const OpenAI = require('openai');
 const NodeCache = require('node-cache');
 const { QdrantClient } = require('@qdrant/js-client-rest');
+const { Pool } = require('pg');
 require('dotenv').config();
 
 const app = express();
@@ -61,9 +62,69 @@ const CACHE_TTL = 5 * 60 * 1000; // 5 menit
 // Format: array of {phone, name}
 let overrideList = [];
 
-// Conversation History Cache (per user, 30 menit TTL)
+// Conversation History Cache (per user, 30 menit TTL) - fallback only
 const conversationCache = new NodeCache({ stdTTL: 1800, checkperiod: 120 });
 const MAX_HISTORY = 10; // Simpan last 10 messages per user
+
+// ====== POSTGRESQL - Persistent conversation history + customer name ======
+const pgPool = new Pool({
+  connectionString: process.env.DATABASE_URL || 'postgresql://digilife_user:MasyaAllah26@145.79.10.104:5432/digilifedb',
+});
+
+pgPool.connect((err) => {
+  if (err) console.error('⚠️  PostgreSQL history unavailable:', err.message);
+  else console.log('✅ PostgreSQL connected (history + customer lookup)');
+});
+
+// Lookup customer name dari DB by WA number
+async function lookupCustomerName(phoneNumber) {
+  try {
+    const clean = phoneNumber.replace(/[^0-9]/g, '');
+    const result = await pgPool.query(
+      `SELECT nama FROM customer_master WHERE REGEXP_REPLACE(wa_number, '[^0-9]', '', 'g') = $1 LIMIT 1`,
+      [clean]
+    );
+    return result.rows.length > 0 ? result.rows[0].nama : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// Get conversation history dari PostgreSQL
+async function getConversationHistoryPG(phoneNumber, limit = 10) {
+  try {
+    const clean = phoneNumber.replace(/[^0-9]/g, '');
+    const result = await pgPool.query(
+      `SELECT message_text, response_text FROM conversations
+       WHERE customer_phone = $1
+       ORDER BY created_at DESC LIMIT $2`,
+      [clean, limit]
+    );
+    // Convert to [{role,content}] format, oldest first
+    return result.rows.reverse().flatMap(r => [
+      { role: 'user', content: r.message_text },
+      { role: 'assistant', content: r.response_text },
+    ]);
+  } catch (e) {
+    // Fallback to NodeCache
+    return conversationCache.get(phoneNumber) || [];
+  }
+}
+
+// Save conversation ke PostgreSQL
+async function saveConversationPG(phoneNumber, message, response) {
+  try {
+    const clean = phoneNumber.replace(/[^0-9]/g, '');
+    await pgPool.query(
+      `INSERT INTO conversations (customer_phone, message_text, response_text) VALUES ($1, $2, $3)`,
+      [clean, message, response]
+    );
+  } catch (e) {
+    // Fallback: save to NodeCache
+    updateConversationHistory(phoneNumber, 'user', message);
+    updateConversationHistory(phoneNumber, 'assistant', response);
+  }
+}
 
 // Fungsi untuk OCR gambar menggunakan GPT-4o-mini Vision
 async function extractTextFromImage(imageUrl) {
@@ -1169,7 +1230,7 @@ ATURAN RESPONSE:
 5. Kalau tidak jelas, tanya spesifik: "Untuk produk apa kak? Netflix, YouTube, atau yang lain?"`;
 
   if (customerName) {
-    systemPrompt += `\n\nCustomer ini: ${customerName} (pelanggan terdaftar).`;
+    systemPrompt += `\n\nNama customer: *${customerName}* (pelanggan terdaftar). Sapa dengan "ka *${customerName}*" di awal balasan pertama dalam percakapan.`;
   }
 
   // Tambahkan knowledge context dari Vector DB jika ada
@@ -1240,14 +1301,15 @@ Response harus natural, jangan robotic!`;
 // Endpoint untuk menerima pesan masuk dari bot-1
 app.post('/inbound', async (req, res) => {
   try {
-    const { senderJid, senderName, chatJid, text, imageUrl, isGroup } = req.body;
+    const { senderJid, senderName, chatJid, text, imageUrl, media, isGroup } = req.body;
 
     let messageText = text || '';
-    
+    const mediaSource = imageUrl || media || null;
+
     // Jika ada gambar, extract text dari gambar menggunakan GPT-4o-mini Vision
-    if (imageUrl) {
+    if (mediaSource) {
       console.log(`📩 Incoming IMAGE from ${senderName} (${senderJid})`);
-      const extractedText = await extractTextFromImage(imageUrl);
+      const extractedText = await extractTextFromImage(mediaSource);
       
       // Combine dengan caption jika ada
       if (messageText) {
@@ -1257,10 +1319,11 @@ app.post('/inbound', async (req, res) => {
       }
     }
 
-    console.log(`📩 Incoming message from ${senderName} (${senderJid}): ${messageText}`);
+    // Lookup customer name dari PostgreSQL
+    const phoneNumber = (senderJid || '').split('@')[0].replace(':', '');
+    const customerDbName = await lookupCustomerName(phoneNumber);
 
-    // Extract phone number dari JID
-    const phoneNumber = senderJid.split('@')[0].replace(':', '');
+    console.log(`📩 Incoming message from ${customerDbName || senderName} (${senderJid}): ${messageText}`);
 
     // Check apakah nomor ada di override list
     if (overrideList.some(item => item.phone === phoneNumber)) {
@@ -1393,10 +1456,10 @@ Mohon tunggu sebentar ya! 🙏`;
     const intent = await extractIntent(messageText, pricingData);
     console.log(`🎯 Intent detected:`, intent);
 
-    // Get conversation history
-    const conversationHistory = getConversationHistory(phoneNumber);
+    // Get conversation history dari PostgreSQL (persistent)
+    const conversationHistory = await getConversationHistoryPG(phoneNumber);
     if (conversationHistory.length > 0) {
-      console.log(`💬 Conversation history: ${conversationHistory.length} messages`);
+      console.log(`💬 Conversation history: ${conversationHistory.length} messages (PostgreSQL)`);
     }
 
     // Check if customer confirms renewal/extension
@@ -1508,12 +1571,11 @@ Tunggu slot terbuka atau tanya admin untuk alternatif!`;
       }
     } else {
       // No product detected - use LLM for general response
-      responseText = await generateResponse(messageText, null, senderName, knowledgeContexts, conversationHistory);
+      responseText = await generateResponse(messageText, null, customerDbName || senderName, knowledgeContexts, conversationHistory);
     }
 
-    // Update conversation history
-    updateConversationHistory(phoneNumber, 'user', messageText);
-    updateConversationHistory(phoneNumber, 'assistant', responseText);
+    // Save conversation ke PostgreSQL (persistent)
+    await saveConversationPG(phoneNumber, messageText, responseText);
 
     // Kirim balasan via bot-1
     await axios.post(BOT_API_URL, {
