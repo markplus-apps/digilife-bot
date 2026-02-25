@@ -1200,10 +1200,10 @@ ATURAN RESPONSE:
 1. Deteksi bahasa user (ID/EN) dan jawab dengan bahasa yang sama
 2. Kalau tanya "Basic/Premium/Family" → jelaskan kategori produk di atas (bukan paket DigiLife)
 3. ⚠️ FORMAT HARGA:
-   - Tampilkan sebagai BULLET LIST dengan `-` (tidak boleh numbered)
-   - Contoh: `- 1 bulan: *Rp 55.000*` (bold harga)
-   - Jika ada promo: `- 1 bulan: ~Rp 76.000~ *Rp 70.000*` (strikethrough normal, bold promo)
-   - ⛔ JANGAN gunakan asterisk di strikethrough: salah `~Rp 76.000*`, benar: `~Rp 76.000~`
+   - Tampilkan sebagai BULLET LIST dengan \`-\` (tidak boleh numbered)
+   - Contoh: \`- 1 bulan: *Rp 55.000*\` (bold harga)
+   - Jika ada promo: \`- 1 bulan: ~Rp 76.000~ *Rp 70.000*\` (strikethrough normal, bold promo)
+   - ⛔ JANGAN gunakan asterisk di strikethrough: salah \`~Rp 76.000*\`, benar: \`~Rp 76.000~\`
 4. ⛔ DILARANG KERAS mengarang atau menghitung harga — hanya tampilkan harga yang ADA PERSIS di KNOWLEDGE BASE
 5. ⛔ DILARANG menampilkan durasi yang TIDAK ADA di KNOWLEDGE BASE (contoh: jangan tulis "12 bulan" jika tidak ada di list)
 6. ⛔ JANGAN sebutkan variant lain yang kosong/SOLD OUT kecuali customer EKSPLISIT tanya (contoh: "variant lain apa saja?")
