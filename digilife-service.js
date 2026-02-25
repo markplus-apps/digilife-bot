@@ -78,6 +78,52 @@ async function lookupCustomerName(phoneNumber) {
   }
 }
 
+// Helper: Extract first name saja dari full name
+function getFirstName(fullName) {
+  if (!fullName) return 'ka';
+  const parts = fullName.trim().split(/\s+/);
+  return parts[0] || 'ka';
+}
+
+// Helper: Check apakah customer punya langganan produk ini dan akan expiry soon
+async function checkRenewalReminder(phoneNumber, productName) {
+  try {
+    if (!productName) return null;
+    
+    const clean = phoneNumber.replace(/[^0-9]/g, '');
+    const result = await pgPool.query(
+      `SELECT nama, end_membership FROM customer_subscriptions 
+       WHERE wa_pelanggan = $1 AND LOWER(produk) LIKE LOWER($2) AND status_payment = 'ACTIVE' 
+       LIMIT 1`,
+      [clean, `%${productName}%`]
+    );
+    
+    if (!result.rows[0]) return null;
+    
+    const { nama, end_membership } = result.rows[0];
+    if (!end_membership) return null;
+    
+    const today = new Date();
+    const endDate = new Date(end_membership);
+    const daysLeft = Math.ceil((endDate - today) / (1000 * 60 * 60 * 24));
+    
+    // Reminder hanya jika <= 7 hari lagi
+    if (daysLeft > 7 || daysLeft < 0) return null;
+    
+    const firstName = getFirstName(nama);
+    if (daysLeft <= 0) {
+      return `⚠️ *${firstName}*, langganan ${productName}-mu sudah expired! Mau perpanjang?\n\n`;
+    } else if (daysLeft === 1) {
+      return `⚠️ *${firstName}*, langganan ${productName}-mu akan expired besok! Mau perpanjang sekarang?\n\n`;
+    } else {
+      return `💡 *${firstName}*, langganan ${productName}-mu akan expired ${daysLeft} hari lagi. Mungkin mau perpanjang sekalian?\n\n`;
+    }
+  } catch (e) {
+    console.error('❌ checkRenewalReminder error:', e.message);
+    return null;
+  }
+}
+
 // Get conversation history dari PostgreSQL
 async function getConversationHistoryPG(phoneNumber, limit = 20) {
   try {
@@ -1317,7 +1363,7 @@ app.post('/inbound', async (req, res) => {
 
     // Lookup customer name dari PostgreSQL
     const phoneNumber = (senderJid || '').split('@')[0].replace(':', '');
-    const customerDbName = await lookupCustomerName(phoneNumber);
+    const customerDbName = getFirstName(await lookupCustomerName(phoneNumber));
 
     console.log(`📩 Incoming message from ${customerDbName || senderName} (${senderJid}): ${messageText}`);
 
@@ -1532,8 +1578,14 @@ Setelah transfer, mohon konfirmasi ya! 🙏🏻`;
         content: pricingContextContent + '\n\n⚠️ Tampilkan dalam format bullet list dengan tanda "-". HANYA tampilkan entri di atas. Durasi yang tidak tercantum = tidak tersedia.',
       };
 
+      // Check proactive renewal reminder untuk customer dengan langganan yang mau expired
+      const renewalReminder = await checkRenewalReminder(phoneNumber, intent.product);
+
       const enrichedKnowledgeContexts = [pricingKnowledge, ...knowledgeContexts];
-      responseText = await generateResponse(messageText, null, customerDbName || senderName, enrichedKnowledgeContexts, conversationHistory);
+      const priceResponse = await generateResponse(messageText, null, customerDbName || senderName, enrichedKnowledgeContexts, conversationHistory);
+      
+      // Prepend reminder jika ada
+      responseText = renewalReminder ? renewalReminder + priceResponse : priceResponse;
     }
 
     // Availability check: hanya untuk pesan yang bukan price_inquiry
