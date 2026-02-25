@@ -1171,8 +1171,10 @@ ATURAN RESPONSE:
 1. Deteksi bahasa user (ID/EN) dan jawab dengan bahasa yang sama
 2. Kalau tanya "Basic/Premium/Family" → jelaskan kategori produk di atas (bukan paket DigiLife)
 3. Format harga promo: ~Rp 76.000~ *Rp 70.000* (WhatsApp strikethrough & bold, JANGAN tulis kata "coret")
-4. Jangan hallucinate product names yang tidak ada di list
-5. Kalau tidak jelas, tanya spesifik: "Untuk produk apa kak? Netflix, YouTube, atau yang lain?"`;
+4. ⛔ DILARANG KERAS mengarang atau menghitung harga — hanya tampilkan harga yang ADA PERSIS di KNOWLEDGE BASE
+5. ⛔ DILARANG menampilkan durasi yang TIDAK ADA di KNOWLEDGE BASE (contoh: jangan tulis "12 bulan" jika tidak ada di list)
+6. Jika durasi yang ditanya tidak ada di data → jawab "Untuk durasi tersebut belum tersedia ka, tersedia [sebutkan hanya yang ada]"
+7. Kalau tidak jelas, tanya spesifik: "Untuk produk apa kak? Netflix, YouTube, atau yang lain?"`;
 
   if (customerName) {
     systemPrompt += `\n\nNama customer: *${customerName}* (pelanggan terdaftar). Sapa dengan "ka *${customerName}*" di awal balasan pertama dalam percakapan.`;
@@ -1485,8 +1487,8 @@ Setelah transfer, mohon konfirmasi ya! 🙏🏻`;
 
       const pricingKnowledge = {
         category: 'PRICING',
-        topic: 'Daftar harga produk DigiLife',
-        content: pricingContextContent,
+        topic: 'Daftar harga produk DigiLife — INI ADALAH DATA LENGKAP. JANGAN tambahkan durasi atau harga yang tidak ada di list ini.',
+        content: pricingContextContent + '\n\n⚠️ HANYA tampilkan entri di atas. Durasi yang tidak tercantum = tidak tersedia.',
       };
 
       const enrichedKnowledgeContexts = [pricingKnowledge, ...knowledgeContexts];
