@@ -1,19 +1,25 @@
-# 🐘 PostgreSQL Integration Guide
+﻿# 🐘 PostgreSQL Guide
 
-Comprehensive guide to conversation history with PostgreSQL.
+Database schema, queries, and function reference for the Digilife WA Bot.
 
 ---
 
 ## 📋 Overview
 
-This guide explains the migration from **Google Sheets + NodeCache** to **PostgreSQL** for conversation history storage and retrieval.
+Semua data operasional bot sudah 100% dari PostgreSQL (migrasi dari Google Sheets selesai Feb 2026).
 
-**Benefits:**
-- ⚡ 10x faster queries (200-400ms vs 2-3s)
+**Data yang ada di PostgreSQL:**
+- ✅ `customer_subscriptions` — 531 rows, sumber utama customer data
+- ✅ `customer_master` — 300 unique customers
+- ✅ `pricing` — 45 items produk aktif
+- ✅ `groups` — 197 group credentials
+- ✅ `conversations` — persistent chat history
+
+**Benefits atas Google Sheets:**
+- ⚡ 10x faster queries (50-100ms vs 2-3s)
 - ♾️ Unlimited conversation history
 - 💾 Persistent data across service restarts
-- 📊 Analytics-ready structured data
-- 🔄 Reminder context awareness
+- No Google Sheets API rate limits
 
 ---
 
@@ -50,327 +56,206 @@ const pool = new Pool({
 
 ---
 
-## �📊 Database Schema
+## 🗄️ Database Schema
 
-### conversations Table
+### customer_subscriptions (Primary Source)
+
+Tabel FLAT — satu baris per subscription. Tidak normalized ke `customer_master`.
+
+```sql
+SELECT id, nama, wa_pelanggan, produk, subscription,
+       end_membership, start_membership, status_payment,
+       slot, email, profil_pin,
+       reminded_h5_at, reminded_h1_at, customer_id
+FROM customer_subscriptions;
+```
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `nama` | VARCHAR | Nama pelanggan |
+| `wa_pelanggan` | VARCHAR | Nomor WA (628xxx) |
+| `produk` | VARCHAR | Nama produk (Netflix, dll) |
+| `subscription` | VARCHAR | Tipe subscription |
+| `end_membership` | DATE | Tanggal berakhir |
+| `start_membership` | DATE | Tanggal mulai |
+| `status_payment` | VARCHAR | `PAID`, `FREE`, dll |
+| `slot` | VARCHAR | Nomor slot |
+| `email` | VARCHAR | Email account |
+| `profil_pin` | VARCHAR | PIN profil |
+| `reminded_h5_at` | TIMESTAMP | Timestamp kirim H-5 reminder |
+| `reminded_h1_at` | TIMESTAMP | Timestamp kirim H-1 reminder |
+| `customer_id` | INTEGER | FK ke customer_master (opsional) |
+
+> ⚠️ `status_payment = 'FREE'` = family/internal owner, **jangan kirim reminder**.
+
+### customer_master
+
+300 rows unique customers. `nama` memiliki UNIQUE CONSTRAINT.
+
+```sql
+SELECT id, nama, wa_pelanggan, email, city, customer_type
+FROM customer_master;
+```
+
+### pricing
+
+45 rows aktif. Primary source untuk info harga produk.
+
+```sql
+SELECT product, duration, price, description, category
+FROM pricing
+WHERE is_active = true;
+```
+
+### groups
+
+197 rows. Kolom utama adalah `subscription` (bukan `name`).
+
+```sql
+SELECT subscription, email, password, code, link, max_slots
+FROM groups;
+```
+
+### conversations
+
+Simple persistent history. Satu row per exchange (message + response).
 
 ```sql
 CREATE TABLE conversations (
   id SERIAL PRIMARY KEY,
   customer_phone VARCHAR(20) NOT NULL,
-  customer_id INTEGER,
   message_text TEXT,
   response_text TEXT,
-  intent VARCHAR(50),
-  product_name VARCHAR(100),
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  metadata JSONB
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Index for fast lookups
 CREATE INDEX idx_conversations_phone ON conversations(customer_phone);
 CREATE INDEX idx_conversations_created ON conversations(created_at DESC);
 ```
 
-**Columns:**
-
-| Column | Type | Purpose |
-|--------|------|---------|
-| `id` | SERIAL | Unique conversation ID |
-| `customer_phone` | VARCHAR(20) | Customer phone number |
-| `customer_id` | INTEGER | Reference to customer_master |
-| `message_text` | TEXT | Customer's message |
-| `response_text` | TEXT | Bot's response |
-| `intent` | VARCHAR(50) | Classified intent (product_inquiry, renewal, etc.) |
-| `product_name` | VARCHAR(100) | Product mentioned (Netflix, Spotify, etc.) |
-| `created_at` | TIMESTAMP | When conversation happened |
-| `metadata` | JSONB | JSON metadata (confidence, tags, etc.) |
-
-**Metadata Example:**
-```json
-{
-  "intent": "product_inquiry",
-  "product": "Netflix",
-  "duration": "3 months",
-  "confidence": 0.95,
-  "intent_detected_at": 1234567890,
-  "tags": ["pricing", "popular_product", "promo"],
-  "followup_needed": false
-}
-```
-
-### conversation_metadata Table
-
-```sql
-CREATE TABLE conversation_metadata (
-  id SERIAL PRIMARY KEY,
-  conversation_id INTEGER NOT NULL,
-  customer_phone VARCHAR(20) NOT NULL,
-  reminder_triggered BOOLEAN DEFAULT FALSE,
-  reminder_type VARCHAR(20),        -- h1, h5, h7
-  reminder_sent_at TIMESTAMP,
-  is_response_to_reminder BOOLEAN DEFAULT FALSE,
-  context_tags TEXT[],
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY(conversation_id) REFERENCES conversations(id)
-);
-
--- Index for reminder filtering
-CREATE INDEX idx_metadata_reminder ON conversation_metadata(reminder_triggered);
-CREATE INDEX idx_metadata_phone ON conversation_metadata(customer_phone);
-```
-
-**Columns:**
-
-| Column | Type | Purpose |
-|--------|------|---------|
-| `id` | SERIAL | Unique metadata ID |
-| `conversation_id` | INTEGER | Link to conversation |
-| `customer_phone` | VARCHAR(20) | Customer phone |
-| `reminder_triggered` | BOOLEAN | Was message triggered by reminder? |
-| `reminder_type` | VARCHAR(20) | Type: h1 (1 day), h5 (5 days), h7 (7 days) |
-| `reminder_sent_at` | TIMESTAMP | When reminder was sent |
-| `is_response_to_reminder` | BOOLEAN | Is this a response to reminder? |
-| `context_tags` | TEXT[] | Tags for context analysis |
-| `created_at` | TIMESTAMP | When metadata created |
-
 ---
 
-## 🔧 Core Functions
+## 🔧 Core Functions (`digilife-service.js`)
 
-All functions are in `digilife-service-pg.js`:
-
-### 1. Get Conversation History
+### 1. Lookup Customer Name by Phone
 
 ```javascript
-async function getConversationHistory(phone, limit = 20) {
-  const query = `
-    SELECT id, message_text, response_text, intent, product_name, created_at
-    FROM conversations
-    WHERE customer_phone = $1
-    ORDER BY created_at DESC
-    LIMIT $2
-  `;
-  
-  const result = await pool.query(query, [phone, limit]);
-  return result.rows.reverse();  // Oldest first
+async function lookupCustomerName(phone) {
+  const result = await pgPool.query(`
+    SELECT nama FROM customer_master WHERE wa_pelanggan = $1
+    UNION
+    SELECT nama FROM customer_subscriptions WHERE wa_pelanggan = $1
+    LIMIT 1
+  `, [phone]);
+  return result.rows[0]?.nama || null;
 }
 ```
 
 **Usage:**
 ```javascript
-const history = await getConversationHistory('628128933008', 20);
-// Returns: [
-//   {
-//     id: 1,
-//     message_text: 'Halo, harga Netflix brp?',
-//     response_text: 'Netflix 3 bulan Rp 99.000',
-//     intent: 'product_inquiry',
-//     product_name: 'Netflix',
-//     created_at: '2026-02-24 10:30:00'
-//   },
-//   ...
-// ]
+const nama = await lookupCustomerName('628128933008');
+// Returns: 'Budi Santoso' or null (jika nomor tidak terdaftar)
 ```
 
-### 2. Update Conversation History
+### 2. Get Conversation History
 
 ```javascript
-async function updateConversationHistory(phone, message, response, metadata = {}) {
-  const query = `
-    INSERT INTO conversations 
-    (customer_phone, message_text, response_text, intent, product_name, metadata)
-    VALUES ($1, $2, $3, $4, $5, $6)
-    RETURNING id
-  `;
-  
-  const result = await pool.query(query, [
-    phone,
-    message,
-    response,
-    metadata.intent || null,
-    metadata.product || null,
-    JSON.stringify(metadata)
-  ]);
-  
-  return result.rows[0].id;
+async function getConversationHistoryPG(phone) {
+  const result = await pgPool.query(
+    `SELECT message_text, response_text, created_at
+     FROM conversations
+     WHERE customer_phone = $1
+     ORDER BY created_at DESC
+     LIMIT 20`,
+    [phone]
+  );
+  return result.rows.reverse(); // oldest first
 }
 ```
 
-**Usage:**
-```javascript
-const conversationId = await updateConversationHistory(
-  '628128933008',
-  'Halo, harga Netflix brp?',
-  'Netflix 3 bulan Rp 99.000',
-  {
-    intent: 'product_inquiry',
-    product: 'Netflix',
-    duration: '3 months',
-    confidence: 0.95,
-    tags: ['pricing', 'popular_product']
-  }
-);
-// Returns: conversation ID (1234)
-```
-
-### 3. Track Reminder Context
+### 3. Save Conversation
 
 ```javascript
-async function trackReminderContext(phone, conversationId, reminderType) {
-  const query = `
-    INSERT INTO conversation_metadata
-    (conversation_id, customer_phone, reminder_triggered, reminder_type, reminder_sent_at)
-    VALUES ($1, $2, true, $3, NOW())
-  `;
-  
-  await pool.query(query, [conversationId, phone, reminderType]);
+async function saveConversationPG(phone, message, response) {
+  await pgPool.query(
+    `INSERT INTO conversations (customer_phone, message_text, response_text)
+     VALUES ($1, $2, $3)`,
+    [phone, message, response]
+  );
 }
 ```
 
-**Usage:**
+### 4. Load Pricing Data
+
 ```javascript
-// When H-5 reminder sent
-await trackReminderContext('628128933008', 1234, 'h5');
+async function loadPricingData() {
+  const result = await pgPool.query(
+    `SELECT product, duration, price
+     FROM pricing
+     WHERE is_active = true
+     ORDER BY product, price`
+  );
+  return result.rows;
+  // Returns 45 items: [{product:'Netflix', duration:'1 Bulan', price:45000}, ...]
+}
 ```
 
-### 4. Get Recent Reminder Context
+### 5. Load Customer Data
 
 ```javascript
-async function getRecentReminderContext(phone, hoursAgo = 72) {
-  const query = `
-    SELECT c.id, c.message_text, c.response_text, cm.reminder_type
-    FROM conversations c
-    JOIN conversation_metadata cm ON c.id = cm.conversation_id
-    WHERE c.customer_phone = $1
-    AND cm.reminder_triggered = true
-    AND cm.reminder_sent_at > NOW() - INTERVAL '${hoursAgo} hours'
-    ORDER BY c.created_at DESC
-    LIMIT 5
-  `;
-  
-  const result = await pool.query(query, [phone]);
+async function loadCustomerData() {
+  const result = await pgPool.query(
+    `SELECT id AS customer_id, nama, wa_pelanggan, produk, subscription,
+            end_membership, start_membership, status_payment,
+            slot, email, profil_pin
+     FROM customer_subscriptions
+     ORDER BY nama`
+  );
+  return result.rows;
+  // Returns 531 rows
+}
+```
+
+### 6. Load Group Data
+
+```javascript
+async function loadGroupData() {
+  const result = await pgPool.query(
+    `SELECT subscription AS name, email, password, code
+     FROM groups
+     WHERE active = true`
+  );
   return result.rows;
 }
 ```
 
-**Usage:**
-```javascript
-// Get context when customer responds to reminder
-const reminderContext = await getRecentReminderContext('628128933008', 72);
-// Bot now knows: "User is responding to a reminder sent 5 days ago"
-// Enables contextual response generation
-```
-
-### 5. Look up Customer Data
+### 7. Payment Update
 
 ```javascript
-async function lookupCustomer(phone) {
-  const query = `
-    SELECT c.id, c.name, c.phone, c.email, 
-           array_agg(
-             jsonb_build_object(
-               'product_id', cs.product_id,
-               'product_name', p.name,
-               'duration', cs.duration,
-               'amount', cs.amount,
-               'start_date', cs.start_date,
-               'end_date', cs.end_date,
-               'status', cs.status
-             )
-           ) as subscriptions
-    FROM customer_master c
-    LEFT JOIN customer_subscriptions cs ON c.id = cs.customer_id
-    LEFT JOIN products p ON cs.product_id = p.id
-    WHERE c.phone = $1
-    GROUP BY c.id, c.name, c.phone, c.email
-  `;
-  
-  const result = await pool.query(query, [phone]);
-  return result.rows[0] || null;
-}
-```
-
-**Returns:**
-```javascript
-{
-  id: 1,
-  name: 'Budi Santoso',
-  phone: '628128933008',
-  email: 'budi@example.com',
-  subscriptions: [
-    {
-      product_id: 1,
-      product_name: 'Netflix',
-      duration: '3 months',
-      amount: 99000,
-      start_date: '2026-01-01',
-      end_date: '2026-04-01',
-      status: 'PAID'
-    },
-    {
-      product_id: 2,
-      product_name: 'Spotify',
-      duration: '1 month',
-      amount: 29000,
-      start_date: '2026-02-01',
-      end_date: '2026-03-01',
-      status: 'ACTIVE'
-    }
-  ]
-}
+// When customer confirms payment
+await pgPool.query(
+  `UPDATE customer_subscriptions
+   SET end_membership = $1, status_payment = 'PAID'
+   WHERE wa_pelanggan = $2 AND produk = $3`,
+  [newEndDate, phone, product]
+);
 ```
 
 ---
 
-## 🔄 Message Processing Flow (PostgreSQL)
-
-### Receiving Message
+## 🔄 Message Processing Flow
 
 ```
 Message arrives: "Halo, berapa harga Netflix?"
 ↓
-wa-bot-1 forwards to /inbound
+fonnte-bot POST /webhook → digilife POST /inbound
 ↓
-digilife-ai processes:
-
-1. Load conversation history
-   query: SELECT * FROM conversations WHERE customer_phone = '628128933008'
-   Result: [Previous 20 conversations]
-
-2. Get reminder context (if customer recently received reminder)
-   query: SELECT * FROM conversation_metadata WHERE reminder_triggered = true AND customer_phone = '628128933008'
-   Result: None (no recent reminders)
-
-3. Detect intent (GPT)
-   Input: [Previous conversations] + Current message
-   Output: intent = 'product_inquiry'
-
-4. Extract entities
-   Product: Netflix
-   Duration: Not specified (assume 3 months default)
-
-5. Search knowledge base
-   Look for Netflix pricing info
-
-6. Generate response
-   "Netflix 3 bulan Rp 99.000"
-
-7. Save to conversations
-   INSERT INTO conversations VALUES (
-     '628128933008',
-     null,
-     'Halo, berapa harga Netflix?',
-     'Netflix 3 bulan Rp 99.000',
-     'product_inquiry',
-     'Netflix',
-     NOW(),
-     '{"intent": "product_inquiry", "product": "Netflix", ...}'
-   )
-
-8. Send to wa-bot-1
-   POST /send-message
-   Result: Message sent ✅
+1. lookupCustomerName(phone) → nama = 'Budi Santoso'
+2. getConversationHistoryPG(phone) → last 20 exchanges
+3. loadPricingData() (cached, pre-loaded at startup)
+4. GPT generates response with ka *Budi* greeting
+5. saveConversationPG(phone, message, response)
+6. Return response → fonnte-bot → Fonnte API → WhatsApp
 ```
 
 ---
@@ -401,92 +286,70 @@ digilife-ai processes:
 
 ## 🚀 Migration Steps
 
-### Step 1: Create Tables
-
-```bash
-# Run migration script
-node migrate-conversations-table.js
-
-# Output:
-# ✅ Connected to PostgreSQL
-# ✅ Table conversations created
-# ✅ Table conversation_metadata created
-# ✅ Indexes created
-# ✅ Migration complete
-```
-
-### Step 2: Deploy PostgreSQL Service
-
-```bash
-# Copy new service
-cp digilife-service-pg.js /root/Digilife/
-
-# Stop old service
-pm2 stop digilife-ai
-pm2 delete digilife-ai
-
-# Start new service
-pm2 start digilife-service-pg.js --name "digilife-ai"
-
-# Verify
-pm2 logs digilife-ai | grep -i "connected\|postgresql"
-```
-
-### Step 3: Verify Data
-
-```bash
-# Connect to database
-psql -U digilife_user -d digilifedb
-
-# Check records
-SELECT COUNT(*) FROM conversations;
-SELECT COUNT(*) FROM conversation_metadata;
-
-# View sample conversation
-SELECT * FROM conversations LIMIT 1;
-```
+> ✅ **Migration sudah selesai.** Semua data sudah di PostgreSQL sejak Feb 2026.
+> Bagian ini hanya sebagai referensi historis.
 
 ---
 
-## 🔍 Querying Examples
+## 🔍 Query Reference
 
-### Get all conversations for a customer
+### Check subscription status
 
 ```sql
-SELECT customer_phone, message_text, response_text, intent, created_at
+SELECT nama, wa_pelanggan, produk, end_membership, status_payment
+FROM customer_subscriptions
+WHERE wa_pelanggan = '628128933008';
+```
+
+### Subscriptions expiring in N days (reminder query)
+
+```sql
+SELECT id, nama, wa_pelanggan, produk, end_membership, status_payment,
+       slot, reminded_h5_at, reminded_h1_at
+FROM customer_subscriptions
+WHERE DATE(end_membership) = CURRENT_DATE + INTERVAL '5 days'
+  AND UPPER(COALESCE(status_payment,'')) != 'FREE'
+ORDER BY nama;
+```
+
+### Conversation history for a customer
+
+```sql
+SELECT customer_phone, message_text, response_text, created_at
 FROM conversations
 WHERE customer_phone = '628128933008'
-ORDER BY created_at DESC;
+ORDER BY created_at DESC
+LIMIT 20;
 ```
 
-### Get conversations with specific intent
+### Pricing for a specific product
 
 ```sql
-SELECT * FROM conversations
-WHERE intent = 'product_inquiry'
-AND created_at > NOW() - INTERVAL '7 days'
-ORDER BY created_at DESC;
+SELECT product, duration, price
+FROM pricing
+WHERE LOWER(product) LIKE '%netflix%'
+  AND is_active = true
+ORDER BY price;
 ```
 
-### Get reminder-triggered conversations
+### Group credentials for a subscription type
 
 ```sql
-SELECT c.customer_phone, c.message_text, cm.reminder_type, cm.reminder_sent_at
-FROM conversations c
-JOIN conversation_metadata cm ON c.id = cm.conversation_id
-WHERE cm.reminder_triggered = true
-AND cm.reminder_sent_at > NOW() - INTERVAL '24 hours';
+SELECT subscription, email, password, code, link
+FROM groups
+WHERE subscription ILIKE '%netflix%'
+LIMIT 5;
 ```
 
-### Analytics: Product popularity
+### Analytics: Most active customers
 
 ```sql
-SELECT product_name, COUNT(*) as inquiry_count
+SELECT customer_phone, COUNT(*) as exchanges
 FROM conversations
-WHERE intent = 'product_inquiry'
-AND created_at > NOW() - INTERVAL '30 days'
-GROUP BY product_name
-ORDER BY inquiry_count DESC;
+WHERE created_at > NOW() - INTERVAL '30 days'
+GROUP BY customer_phone
+ORDER BY exchanges DESC
+LIMIT 10;
 ```
 
 ---
@@ -514,12 +377,11 @@ gunzip -c digilifedb_backup.sql.gz | psql -U digilife_user digilifedb
 
 ## 📖 Related Guides
 
+- [Deployment Guide](./DEPLOYMENT.md) - How to deploy
 - [Architecture](./ARCHITECTURE.md) - System design
-- [Deployment](./DEPLOYMENT.md) - How to deploy
-- [Troubleshooting](./TROUBLESHOOTING.md) - Common issues
 
 ---
 
-**Created:** 2026-02-24  
-**Version:** 2.1  
+**Last Updated:** 2026-02-25  
+**Status:** ✅ Production active, 100% PostgreSQL  
 **Level:** Advanced

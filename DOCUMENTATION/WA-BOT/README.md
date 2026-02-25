@@ -14,17 +14,17 @@ WhatsApp Chatbot AI yang menjawab pertanyaan tentang subscription products.
 - Tracks conversation history
 - Sends automated reminders
 
-**Services Running:**
+**Services Running (VPS: 145.79.10.104):**
 ```
-wa-bot-1 (port 3010)
-    ↓
-digilife-ai (port 3005) ← Main AI Engine
-    ├→ PostgreSQL (conversation history)
+fonnte-bot  (PM2 id 26, port 3010)  /root/digilife-bot/
+    ↓  Fonnte webhook gateway
+digilife    (PM2 id 19, port 3005)  /root/Digilife/
+    ├→ PostgreSQL (pricing, customer, groups, conversation)
     ├→ Qdrant (vector search)
     └→ OpenAI (GPT-4o-mini)
 
-reminder-service (port 3015)
-    └→ Scheduled reminders (H-7, H-5, H-1)
+reminder    (PM2 id 20, port 3015)  /root/Digilife/
+    └→ Scheduled reminders (H-5, H-1)
 ```
 
 ---
@@ -32,19 +32,16 @@ reminder-service (port 3015)
 ## 🎯 Features
 
 ### Core Features
-✅ **Message Receiving** - Baileys WhatsApp socket  
+✅ **Message Receiving** - Fonnte API gateway (paid plan, no watermark)  
 ✅ **Intent Detection** - Identify what customer wants  
-✅ **Pricing Lookup** - Fast database queries  
+✅ **Pricing Lookup** - PostgreSQL `pricing` table (45 items)  
 ✅ **AI Responses** - Context-aware via GPT-4o-mini  
-✅ **Conversation History** - Persistent in PostgreSQL  
-✅ **Reminder System** - Automated H-7, H-5, H-1 reminders  
-✅ **Customer Validation** - Check if customer exists  
-
-### NEW Features (PostgreSQL)
-✅ **Unlimited History** - No longer limited to 10 messages  
-✅ **Reminder Context** - Know when customer responds to reminder  
-✅ **Fast Performance** - 10x faster than Google Sheets  
-✅ **Metadata Tracking** - Intent, product, context tags  
+✅ **Conversation History** - Persistent in PostgreSQL `conversations` table  
+✅ **Reminder System** - Automated H-5, H-1 reminders; skip FREE status  
+✅ **Customer Validation** - Lookup by WA number from `customer_subscriptions`  
+✅ **Greeting by Name** - `ka *Nama*` greeting from DB lookup  
+✅ **Unlimited History** - No message limit  
+✅ **Fast Performance** - 10x faster vs Google Sheets  
 
 ---
 
@@ -54,34 +51,37 @@ reminder-service (port 3015)
 ```bash
 ssh root@145.79.10.104
 pm2 list
-pm2 logs wa-bot-1 --lines 20
 pm2 logs digilife --lines 20
+pm2 logs reminder --lines 20
 ```
 
-### Test Message
-Send WhatsApp message to bot number (check IMPORTANT-NOTES.md for number)
+### Expected Startup Logs
+```
+✅ PostgreSQL connected (history + customer lookup)
+✅ Loaded 45 pricing items from PostgreSQL
+✅ Loaded 531 customer records from PostgreSQL
+✅ Data pre-loaded successfully
+```
 
-### Check Logs
-```bash
-pm2 logs digilife
-# Should see:
-# 📩 Incoming message from Haryadi
-# 💬 Conversation history: X messages
-# 🎯 Intent detected
-# ✅ Response sent
+### Deploy Update
+```powershell
+# From local (PowerShell)
+git push; ssh root@145.79.10.104 "cd /root/Digilife && git pull && pm2 restart digilife reminder"
 ```
 
 ---
 
 ## 📂 Source Files
 
-| File | Purpose | Location |
-|------|---------|----------|
-| `bot-1-server.js` | WhatsApp socket (Baileys) | `/Ai Agent/` |
-| `digilife-service.js` | AI Engine (old Google Sheets) | `/Ai Agent/` |
-| `digilife-service-pg.js` | AI Engine (new PostgreSQL) 🆕 | `/Ai Agent/` |
-| `reminder-service.js` | Reminder scheduler | `/Ai Agent/` |
-| `server.js` | Actual running service | `/root/Baileys/bot-1/` |
+| File | Purpose | Local Path | VPS Path |
+|------|---------|------------|----------|
+| `fonnte-bot.js` | Fonnte webhook gateway | `/Ai Agent/` | `/root/digilife-bot/` |
+| `digilife-service.js` | Main AI Engine (PostgreSQL) | `/Ai Agent/` | `/root/Digilife/` |
+| `reminder-service.js` | Reminder scheduler | `/Ai Agent/` | `/root/Digilife/` |
+
+**Git Repository:** `markplus-apps/digilife-bot` (branch: `main`)  
+**Local → VPS sync:** `git push` → `ssh git pull`  
+> ⚠️ `fonnte-bot.js` tidak termasuk dalam git workflow, deploy manual via `scp` jika ada perubahan.
 
 ---
 
@@ -90,54 +90,51 @@ pm2 logs digilife
 ```mermaid
 graph TD
     WA["📱 WhatsApp Message"]
-    BOT["🤖 wa-bot-1 (port 3010)"]
-    DIG["🧠 digilife-ai (port 3005)"]
+    FONNTE["🤖 fonnte-bot (port 3010)"]
+    DIG["🧠 digilife (port 3005)"]
     DB["🗄️ PostgreSQL"]
     QDA["🔍 Qdrant"]
-    GPT["🤖 OpenAI"]
-    RESP["📤 Response"]
+    GPT["🤖 OpenAI GPT-4o-mini"]
+    RESP["📤 Response via Fonnte API"]
     
-    WA -->|receive| BOT
-    BOT -->|forward| DIG
-    DIG -->|load history| DB
+    WA -->|Fonnte webhook POST /webhook| FONNTE
+    FONNTE -->|forward POST /inbound| DIG
+    DIG -->|load history + customer| DB
     DIG -->|semantic search| QDA
-    DIG -->|generate| GPT
-    GPT -->|save| DB
-    DB -->|send| RESP
+    DIG -->|generate response| GPT
+    DIG -->|save conversation| DB
+    DIG -->|POST /send-message| FONNTE
+    FONNTE -->|Fonnte API| RESP
     RESP -->|reply| WA
 ```
 
 ---
 
-## 📊 Recent Updates (Feb 24, 2026)
+## 📊 Changelog
 
-### 1. Nginx Port Fix ✅
-- Fixed port routing: 3001 → 3005
-- Eliminated redundant port listening
-- Both local and VPS synchronized
+### Feb 25, 2026 - Full PostgreSQL Migration ✅
+- Migrasi semua data dari Google Sheets → PostgreSQL
+- `digilife-service.js`: pricing, customer, groups, conversations semua dari DB
+- `reminder-service.js`: flat query ke `customer_subscriptions`, skip FREE status
+- Fix column names: `wa_pelanggan`, `end_membership`, `status_payment`, `subscription`
+- Greeting `ka *Nama*` via DB lookup
+- Git workflow: `git push` → `ssh git pull` → `pm2 restart`
+- Fonnte upgraded ke paid plan (watermark removed)
 
-### 2. PostgreSQL Integration ✅
-- Created `conversations` table (unlimited history)
-- Created `conversation_metadata` table (reminder context)
-- Replaced NodeCache with persistent DB storage
-- 10x performance improvement (10-50ms vs 2-3s)
-
-### 3. Service Standardization ✅
-- `wa-bot-1` - Socket receiver
-- `digilife-ai` - Main AI engine
-- `reminder-service` - Scheduler
-- Structure ready for `wa-bot-2`, `wa-bot-3`, etc.
+### Feb 24, 2026 - Architecture Overhaul ✅
+- Migrasi dari Baileys WhatsApp socket → Fonnte API gateway
+- PostgreSQL persistent conversation history
+- 10x performance improvement
 
 ---
 
 ## 📖 Read Next
 
 - [Architecture Details](./ARCHITECTURE.md) - Deep dive into how it works
-- [VPS Deployment](./VPS_DEPLOYMENT.md) - How to deploy & maintain
-- [PostgreSQL Integration](./POSTGRESQL_INTEGRATION.md) - Database upgrade details
-- [Troubleshooting](./TROUBLESHOOTING.md) - Common issues & fixes
+- [Deployment Guide](./DEPLOYMENT.md) - How to deploy, maintain & troubleshoot
+- [PostgreSQL Guide](./POSTGRESQL.md) - Database schema & query reference
 
 ---
 
-**Created:** 2026-02-24  
-**Status:** ✅ Production ready, 🔄 PostgreSQL deployment pending
+**Last Updated:** 2026-02-25  
+**Status:** ✅ Production ready — 100% PostgreSQL, Fonnte gateway active

@@ -11,7 +11,8 @@ How to deploy, configure, and manage the WA Bot system.
 - ✅ PM2 installed globally (`npm install -g pm2`)
 - ✅ PostgreSQL running on port 5432
 - ✅ Qdrant running on port 6333
-- ✅ Baileys QR code scanned
+- ✅ Fonnte paid plan (active, no watermark)
+- ✅ Git: local repo synced with `markplus-apps/digilife-bot`
 
 ---
 
@@ -29,60 +30,76 @@ npm install dotenv express axios pm2
 
 ### 2. Configure Environment Variables
 
-Create `.env` file:
+**Local `.env`:**
 ```bash
-# WA Bot Configuration
-BOT_API_URL=http://localhost:3010/send-message
-DIGILIFE_SERVICE_URL=http://localhost:3005/inbound
-
-# PostgreSQL
-DB_HOST=localhost
-DB_PORT=5432
-DB_USER=digilife_user
-DB_PASSWORD=MasyaAllah26
-DB_NAME=digilifedb
-
 # OpenAI
-OPENAI_API_KEY=your_key_here
-OPENAI_MODEL=gpt-4o-mini
+OPENAI_API_KEY=sk-proj-...
 
-# Google Sheets (Legacy)
-GOOGLE_SHEETS_ID=your_sheets_id
-GOOGLE_API_KEY=your_api_key
+# Service Ports
+PORT=3005
+FONNTE_PORT=3010
 
-# Port Configuration
-WA_BOT_PORT=3010
-DIGILIFE_PORT=3005
-REMINDER_PORT=3015
+# Service URLs
+BOT_API_URL=http://localhost:3010/send-message
+DIGILIFE_URL=http://localhost:3005/inbound
+
+# Fonnte
+FONNTE_TOKEN=yTJG4CJUpe1nvNB6MaAP
+
+# PostgreSQL (external IP for local dev)
+DATABASE_URL=postgresql://digilife_user:MasyaAllah26@145.79.10.104:5432/digilifedb
+
+# Legacy (unused, kept for reference)
+SPREADSHEET_ID=1US9SqWny3hA6JogGSCxh6sOkr98ZrzzxER_mdAuqpsg
 ```
 
-### 3. Start Services Locally
-
+**VPS `/root/Digilife/.env`** (uses localhost for DB):
 ```bash
-# Terminal 1: Start wa-bot-1
-node bot-1-server.js
-# Expected output: ✅ Bot running on port 3010
+OPENAI_API_KEY=sk-proj-...
+PORT=3005
+BOT_API_URL=http://localhost:3010/send-message
+FONNTE_TOKEN=yTJG4CJUpe1nvNB6MaAP
+DATABASE_URL=postgresql://digilife_user:MasyaAllah26@localhost:5432/digilifedb
+```
 
-# Terminal 2: Start digilife-ai (Current version - Google Sheets)
+> ⚠️ `DATABASE_URL` di VPS harus pakai `localhost`, bukan external IP.
+
+### 3. Start Services Locally (for testing)
+
+```powershell
+# Terminal 1: Start digilife AI engine
 node digilife-service.js
 # Expected output: ✅ Service running on port 3005
 
-# Terminal 3: Start reminder-service
+# Terminal 2: Start fonnte-bot gateway
+node fonnte-bot.js
+# Expected output: ✅ Fonnte bot running on port 3010
+
+# Terminal 3: Start reminder service
 node reminder-service.js
 # Expected output: ✅ Reminder service running on port 3015
 ```
 
-### 4. Test the Flow
+### 4. Deploy Update to VPS
 
-```bash
-# Terminal 4: Send test message
-curl -X POST http://localhost:3010/send-message \
-  -H "Content-Type: application/json" \
-  -d '{
-    "phone": "628128933008@c.us",
-    "message": "Test message from bot"
-  }'
+```powershell
+# Standard deploy workflow (from local PowerShell)
+git add -A
+git commit -m "your commit message"
+git push; ssh root@145.79.10.104 "cd /root/Digilife && git pull && pm2 restart digilife reminder"
 ```
+
+Expected output:
+```
+branch 'main' of https://github.com/markplus-apps/digilife-bot
+1 file changed, X insertions(+)
+✅ PostgreSQL connected (history + customer lookup)
+✅ Loaded 45 pricing items from PostgreSQL
+✅ Loaded 531 customer records from PostgreSQL
+✅ Data pre-loaded successfully
+```
+
+> ⚠️ `fonnte-bot.js` di-deploy manual (bukan via git), karena ada di `/root/digilife-bot/` yang berbeda path.
 
 ---
 
@@ -91,131 +108,45 @@ curl -X POST http://localhost:3010/send-message \
 ### 1. Connect to VPS
 
 ```bash
-# SSH into VPS
 ssh root@145.79.10.104
-cd /root
 ```
 
-### 2. Deploy wa-bot-1
+### 2. Service Locations on VPS
 
-```bash
-# Create directory if not exists
-mkdir -p /root/Baileys/bot-1
+| PM2 Name | PM2 ID | Port | Script |
+|----------|--------|------|--------|
+| `digilife` | 19 | 3005 | `/root/Digilife/digilife-service.js` |
+| `reminder` | 20 | 3015 | `/root/Digilife/reminder-service.js` |
+| `fonnte-bot` | 26 | 3010 | `/root/digilife-bot/fonnte-bot.js` |
 
-# Copy from local
-scp bot-1-server.js root@145.79.10.104:/root/Baileys/bot-1/
+### 3. Deploy Digilife + Reminder (git-based)
 
-# Connect and start
-ssh root@145.79.10.104
-cd /root/Baileys/bot-1
-
-# Start with PM2
-pm2 start bot-1-server.js --name "wa-bot-1" --port 3010
+```powershell
+# From local machine (PowerShell)
+git push; ssh root@145.79.10.104 "cd /root/Digilife && git pull && pm2 restart digilife reminder"
 ```
 
-### 3. Deploy digilife-ai (Google Sheets Version)
+### 4. Deploy fonnte-bot (manual scp)
+
+```powershell
+# Only needed when fonnte-bot.js has changes
+scp fonnte-bot.js root@145.79.10.104:/root/digilife-bot/
+ssh root@145.79.10.104 "pm2 restart fonnte-bot"
+```
+
+### 5. Initial Setup (first-time only)
 
 ```bash
-# Create directory
-mkdir -p /root/Digilife
-
-# Copy service
-scp digilife-service.js root@145.79.10.104:/root/Digilife/
-
-# Deploy
-ssh root@145.79.10.104
+# On VPS
 cd /root/Digilife
-pm2 start digilife-service.js --name "digilife-ai" --port 3005
+git init
+git remote add origin https://github.com/markplus-apps/digilife-bot.git
+git pull origin main
+pm2 start digilife-service.js --name "digilife"
+pm2 start reminder-service.js --name "reminder"
+pm2 save
+pm2 startup
 ```
-
-### 4. Deploy reminder-service
-
-```bash
-# Copy service
-scp reminder-service.js root@145.79.10.104:/root/Digilife/
-
-# Deploy
-ssh root@145.79.10.104
-cd /root/Digilife
-pm2 start reminder-service.js --name "reminder-service" --port 3015
-```
-
-### 5. Configure Nginx Reverse Proxy
-
-```bash
-# Connect to VPS
-ssh root@145.79.10.104
-
-# Check/edit Nginx config
-nano /etc/nginx/sites-available/default
-```
-
-Required configuration:
-```nginx
-server {
-    listen 3001;
-    server_name _;
-
-    location / {
-        proxy_pass http://localhost:3005;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host $host;
-        proxy_cache_bypass $http_upgrade;
-    }
-}
-```
-
-Restart Nginx:
-```bash
-sudo nginx -t
-sudo systemctl restart nginx
-```
-
----
-
-## 🔑 PostgreSQL Migration (NEW)
-
-### Step 1: Create Tables
-
-```bash
-# Connect to VPS
-ssh root@145.79.10.104
-
-# Copy migration script
-scp migrate-conversations-table.js root@145.79.10.104:/root/Digilife/
-
-# Run migration
-cd /root/Digilife
-node migrate-conversations-table.js
-
-# Expected output:
-# ✅ Connected to PostgreSQL
-# ✅ Created tables: conversations, conversation_metadata
-# ✅ Tables ready for use
-```
-
-### Step 2: Deploy PostgreSQL Version
-
-```bash
-# Copy new service
-scp digilife-service-pg.js root@145.79.10.104:/root/Digilife/
-
-# On VPS: Stop old service
-ssh root@145.79.10.104
-pm2 stop digilife-ai
-pm2 delete digilife-ai
-
-# Start new PostgreSQL version
-cd /root/Digilife
-pm2 start digilife-service-pg.js --name "digilife-ai" --port 3005
-
-# Verify logs
-pm2 logs digilife-ai
-```
-
----
 
 ## 📊 PM2 Management
 
@@ -227,13 +158,13 @@ pm2 list
 
 Expected output:
 ```
-┌─────────┬─────────────┬──────┬───────┬──────────┐
-│ id      │ name        │ port │ pid   │ status   │
-├─────────┼─────────────┼──────┼───────┼──────────┤
-│ 0       │ wa-bot-1    │ 3010 │ 1234  │ online   │
-│ 1       │ digilife-ai │ 3005 │ 1235  │ online   │
-│ 2       │ reminder    │ 3015 │ 1236  │ online   │
-└─────────┴─────────────┴──────┴───────┴──────────┘
+┌─────────┬─────────────┬───────┬───────┬──────────┐
+│ id      │ name        │ port  │ pid   │ status   │
+├─────────┼─────────────┼───────┼───────┼──────────┤
+│ 19      │ digilife    │ 3005  │ xxxx  │ online   │
+│ 20      │ reminder    │ 3015  │ xxxx  │ online   │
+│ 26      │ fonnte-bot  │ 3010  │ xxxx  │ online   │
+└─────────┴─────────────┴───────┴───────┴──────────┘
 ```
 
 ### Common Commands
@@ -265,39 +196,36 @@ pm2 startup
 
 ## 🧪 Testing
 
-### 1. Test wa-bot-1 Connection
+### 1. Test fonnte-bot Connection
 
 ```bash
-# SSH into VPS
-ssh root@145.79.10.104
-
-# Check if listening
+# Check port listening
 netstat -tulpn | grep 3010
-# Expected: LISTEN ... 3010 ... node
 
-# Or test locally
-curl http://localhost:3010/status
+# Test send-message endpoint
+curl -X POST http://localhost:3010/send-message \
+  -H "Content-Type: application/json" \
+  -d '{"to": "628128933008", "text": "test ping"}'
 ```
 
-### 2. Test digilife-ai Service
+### 2. Test digilife Service
 
 ```bash
-# Send test message
+# Send test inbound message
 curl -X POST http://localhost:3005/inbound \
   -H "Content-Type: application/json" \
-  -d '{
-    "phone": "628128933008",
-    "text": "Hello",
-    "isFromMe": false
-  }'
+  -d '{"sender": "628128933008", "message": "halo"}'
 
 # Expected response: JSON with processed message
 ```
 
-### 3. Test PostgreSQL Integration
+### 3. Test Reminder Service
 
 ```bash
-# Check if tables exist
+# Trigger H-5 check manually
+curl "http://localhost:3015/trigger-reminder?type=h5"
+# Expected: {"success":true, "message":"H-5 Complete: sent X/Y reminder(s)"}
+```
 psql -U digilife_user -d digilifedb -c "\dt"
 
 # Query conversation history
@@ -310,7 +238,7 @@ psql -U digilife_user -d digilifedb -c "SELECT * FROM conversations LIMIT 1;"
 
 ```bash
 # Check if running
-pm2 logs reminder-service
+pm2 logs reminder
 
 # Expected output: Cron schedule logging
 ```
@@ -326,10 +254,10 @@ pm2 logs reminder-service
 pm2 logs
 
 # Specific service
-pm2 logs digilife-ai
+pm2 logs digilife
 
 # Last 100 lines
-pm2 logs digilife-ai --lines 100
+pm2 logs digilife --lines 100
 ```
 
 ### Database Monitoring
@@ -364,10 +292,10 @@ LIMIT 5;
 pm2 list
 
 # Check logs
-pm2 logs digilife-ai
+pm2 logs digilife
 
 # Restart service
-pm2 restart digilife-ai
+pm2 restart digilife
 
 # Verify port
 netstat -tulpn | grep 3005
@@ -402,15 +330,16 @@ sudo tail -f /var/log/nginx/error.log
 ### Issue: Bot not sending messages
 
 ```bash
-# Check Baileys socket
-pm2 logs wa-bot-1 | grep -i qr
+# Check fonnte-bot logs
+pm2 logs fonnte-bot
 
-# Scan QR code again if needed
-pm2 delete wa-bot-1
-pm2 start bot-1-server.js --name "wa-bot-1"
+# Test send endpoint
+curl -X POST http://localhost:3010/send-message \
+  -H "Content-Type: application/json" \
+  -d '{"to": "628128933008", "text": "test"}'
 
-# Check for error messages
-pm2 logs wa-bot-1
+# Check FONNTE_TOKEN in .env
+cat /root/digilife-bot/.env | grep FONNTE_TOKEN
 ```
 
 ---
@@ -428,31 +357,41 @@ CREATE INDEX idx_metadata_reminder ON conversation_metadata(reminder_triggered);
 
 ### 2. PM2 Configuration
 
-Create `ecosystem.config.js`:
+`/root/Digilife/ecosystem.config.js`:
 ```javascript
 module.exports = {
   apps: [{
-    name: 'wa-bot-1',
-    script: 'bot-1-server.js',
-    instances: 1,
+    name: 'digilife',
+    script: 'digilife-service.js',
+    env_file: '/root/Digilife/.env',
     max_memory_restart: '500M',
-    env: { PORT: 3010 }
   }, {
-    name: 'digilife-ai',
-    script: 'digilife-service-pg.js',
-    instances: 1,
-    max_memory_restart: '500M',
-    env: { PORT: 3005 }
+    name: 'reminder',
+    script: 'reminder-service.js',
+    env_file: '/root/Digilife/.env',
+    max_memory_restart: '300M',
+  }]
+};
+```
+
+`/root/digilife-bot/ecosystem.config.js`:
+```javascript
+module.exports = {
+  apps: [{
+    name: 'fonnte-bot',
+    script: 'fonnte-bot.js',
+    env_file: '/root/digilife-bot/.env',
   }]
 };
 ```
 
 ### 3. Connection Pooling
 
-Ensure `digilife-service-pg.js` uses connection pooling:
+`digilife-service.js` uses connection pooling via `DATABASE_URL`:
 ```javascript
-const pool = new Pool({
-  max: 20,          // Max connections
+const pgPool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  max: 20,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 2000
 });
@@ -473,11 +412,10 @@ const pool = new Pool({
 ## 📖 Related Guides
 
 - [Architecture](./ARCHITECTURE.md) - System design details
-- [PostgreSQL Integration](./POSTGRESQL_INTEGRATION.md) - Database details
-- [Troubleshooting](./TROUBLESHOOTING.md) - Common issues
+- [PostgreSQL Guide](./POSTGRESQL.md) - Database details
 
 ---
 
-**Last Updated:** 2026-02-24  
-**Version:** 2.1 (PostgreSQL)  
+**Last Updated:** 2026-02-25  
+**Version:** 3.0 (Fonnte + PostgreSQL)  
 **Level:** Intermediate
