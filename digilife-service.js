@@ -907,14 +907,19 @@ Row: ${customer.rowIndex}`
 // e.g. "#Spotify Premium 10" → "Spotify Premium"
 // e.g. "Disney+ Hotstar Group 4" → "Disney+ Hotstar"
 // e.g. "HBO MAX 01 JUSTICE LEAGUE" → "HBO MAX"
+// e.g. "MICROSOFT 365 - PERSONAL" → "Microsoft 365"
 function extractProductDisplayName(groupName) {
   return groupName
-    .replace(/^#/, '')                        // hapus leading #
-    .replace(/\s+Group\s+\d+.*$/i, '')        // hapus "Group N" dan setelahnya
-    .replace(/\s+\d{2}\s+[A-Z][A-Z\s]+$/, '') // hapus "01 JUSTICE LEAGUE" pattern
-    .replace(/\s+\d+$/, '')                   // hapus trailing number
-    .replace(/\s+-\s+.*$/, '')                // hapus " - SUBTITLE"
-    .trim();
+    .replace(/^#/, '')                           // hapus leading #
+    .replace(/\s+Group\s+\d+.*$/i, '')           // hapus "Group N" dan setelahnya
+    .replace(/\s+\d{2}\s+[A-Z][A-Z\s]+$/, '')   // hapus "01 JUSTICE LEAGUE" pattern
+    .replace(/\s*-\s*.*$/, '')                   // hapus " - SUBTITLE" atau "-SUBTITLE"
+    .replace(/\s+\d+$/, '')                      // hapus trailing number
+    .trim()
+    // Title case: "MICROSOFT 365" → "Microsoft 365"
+    .replace(/\b\w+/g, w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    // Fix common abbreviations: "Hbo" → "HBO", "Tv" → "TV"
+    .replace(/\b(Hbo|Tv|Vpn|Otp|Uhd|4k)\b/gi, w => w.toUpperCase());
 }
 
 function detectProductFromMessage(message, availabilityMap) {
@@ -1154,12 +1159,11 @@ Prioritas: SUPPORT CUSTOMER, bukan jualan. Customer biasanya menanyakan:
 3. Jarang yang tanya harga duluan
 
 ⚠️ IMPORTANT - KAPAN HARUS DEFER KE ADMIN:
-- Jika customer request langganan BARU (bukan perpanjangan) DAN belum tahu harga/produk → Bilang "Tim admin akan proses"
-- ⚠️ JANGAN defer jika customer HANYA tanya harga atau cek ketersediaan slot — itu bukan new subscription request
-- ⚠️ JANGAN defer jika customer bilang "ada slot?", "ready?", "available?", "berapa harga?" — jawab langsung dari data
-- Jika pertanyaan TIDAK JELAS atau AMBIGUOUS → Jangan tebak-tebak, bilang "Bisa dijelaskan lebih detail?"
-- Jika conversation sudah melibatkan ADMIN (lihat conversation history) → Jangan interrupt, respond minimal
-- Jika customer konfirmasi pembayaran/transfer → Bilang "Terima kasih, admin akan cek konfirmasi pembayaran"
+- Jika customer EKSPLISIT minta proses order/pembayaran untuk langganan BARU (contoh: "mau order", "mau daftar", "transfer ke mana?") → Bilang "Tim admin akan proses"
+- ⚠️ JANGAN defer jika customer HANYA tanya harga, fitur produk, atau cek ketersediaan — jawab langsung
+- ⚠️ JANGAN defer jika customer tanya spesifikasi produk ("dapat OneDrive?", "bisa berapa device?") — jawab dari knowledge base
+- Jika pertanyaan TIDAK JELAS → Tanya spesifik: "Bisa dijelaskan lebih detail?"
+- Jika customer sudah bayar/transfer → Bilang "Terima kasih, admin akan cek konfirmasi pembayaran"
 - Jika customer tanya hal yang TIDAK ada di knowledge base → Bilang "Saya hubungkan dengan admin ya"
 
 PRODUK YANG TERSEDIA (kategorisasi):
