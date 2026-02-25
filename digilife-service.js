@@ -1199,7 +1199,11 @@ ${priceNonPromoFormatted ? `Harga Reguler: ${priceNonPromoFormatted}\n` : ''}Har
 
 Response: Jawab natural, format harga ~Rp X~ *Rp Y* jika ada promo (gunakan WhatsApp strikethrough).`;
   } else {
-    userPrompt += `\n\nTidak ada data harga spesifik. 
+    const hasPricingContext = knowledgeContexts.some(ctx => ctx.category === 'PRICING');
+    if (hasPricingContext) {
+      userPrompt += `\n\nGunakan data harga dari KNOWLEDGE BASE di atas untuk menjawab. Tampilkan semua durasi yang relevan. Format harga: *Rp X.XXX* (bold). Response harus natural, jangan robotic!`;
+    } else {
+      userPrompt += `\n\nTidak ada data harga spesifik. 
 Analisa dulu: Apakah pertanyaan tentang:
 1. Troubleshooting/kendala teknis → Jawab sesuai FAQ
 2. Tanya kategori produk ("basic/premium/family"?) → Jelaskan kategori streaming/music/productivity
@@ -1207,6 +1211,7 @@ Analisa dulu: Apakah pertanyaan tentang:
 4. Perpanjangan → Tanyakan produk dan akun
 
 Response harus natural, jangan robotic!`;
+    }
   }
 
   try {
@@ -1451,8 +1456,31 @@ Setelah transfer, mohon konfirmasi ya! 🙏🏻`;
     // Jika intent adalah price_inquiry → LANGSUNG ke GPT, jangan intercept dengan availability check
     // Ini mencegah "berapa harga netflix?" dijawab dengan FULL/KOSONG
     if (intent.intent === 'price_inquiry') {
-      console.log(`💰 Price inquiry detected → routing to GPT (skipping availability check)`);
-      responseText = await generateResponse(messageText, null, customerDbName || senderName, knowledgeContexts, conversationHistory);
+      console.log(`💰 Price inquiry detected → routing to GPT with full pricing data`);
+
+      // Build pricing context dari pricingData — filter by product jika intent.product diketahui
+      const productFilter = intent.product ? intent.product.toLowerCase() : null;
+      let pricingForContext = pricingData;
+      if (productFilter) {
+        const filtered = pricingData.filter(p =>
+          p.product.toLowerCase().includes(productFilter) ||
+          productFilter.includes(p.product.toLowerCase().split(' ')[0])
+        );
+        if (filtered.length > 0) pricingForContext = filtered;
+      }
+
+      const pricingContextContent = pricingForContext.map(p =>
+        `- ${p.product} ${p.duration}: Rp ${p.price.toLocaleString('id-ID')}`
+      ).join('\n');
+
+      const pricingKnowledge = {
+        category: 'PRICING',
+        topic: 'Daftar harga produk DigiLife',
+        content: pricingContextContent,
+      };
+
+      const enrichedKnowledgeContexts = [pricingKnowledge, ...knowledgeContexts];
+      responseText = await generateResponse(messageText, null, customerDbName || senderName, enrichedKnowledgeContexts, conversationHistory);
     }
 
     // Availability check: hanya untuk pesan yang bukan price_inquiry
