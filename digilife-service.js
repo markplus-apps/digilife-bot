@@ -167,13 +167,18 @@ async function loadPricingData() {
        ORDER BY product, duration`
     );
 
-    const pricing = result.rows.map(row => ({
-      product:       row.product || '',
-      duration:      row.duration || '',
-      price:         Math.round(parseFloat(row.price)) || 0,
-      price_regular: Math.round(parseFloat(row.price)) || 0,
-      currency:      'IDR',
-    }));
+    const pricing = result.rows.map(row => {
+      // Parse harga normal dari kolom description (format: "Harga normal: 390000")
+      const descMatch = row.description ? row.description.match(/Harga normal:\s*(\d+)/) : null;
+      const priceNormal = descMatch ? parseInt(descMatch[1]) : 0;
+      return {
+        product:       row.product || '',
+        duration:      row.duration || '',
+        price:         Math.round(parseFloat(row.price)) || 0,
+        price_normal:  priceNormal,   // harga sebelum diskon (0 = tidak ada diskon)
+        currency:      'IDR',
+      };
+    });
 
     pricingCache = { data: pricing, lastUpdate: now };
     console.log(`✅ Loaded ${pricing.length} pricing items from PostgreSQL`);
@@ -1469,9 +1474,14 @@ Setelah transfer, mohon konfirmasi ya! 🙏🏻`;
         if (filtered.length > 0) pricingForContext = filtered;
       }
 
-      const pricingContextContent = pricingForContext.map(p =>
-        `- ${p.product} ${p.duration}: Rp ${p.price.toLocaleString('id-ID')}`
-      ).join('\n');
+      const pricingContextContent = pricingForContext.map(p => {
+        const hargaPromo = `Rp ${p.price.toLocaleString('id-ID')}`;
+        if (p.price_normal > 0 && p.price_normal > p.price) {
+          const hargaNormal = `Rp ${p.price_normal.toLocaleString('id-ID')}`;
+          return `- ${p.product} ${p.duration}: ${hargaNormal} → PROMO ${hargaPromo}`;
+        }
+        return `- ${p.product} ${p.duration}: ${hargaPromo}`;
+      }).join('\n');
 
       const pricingKnowledge = {
         category: 'PRICING',
