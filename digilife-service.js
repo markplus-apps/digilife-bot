@@ -28,6 +28,9 @@ const openai = new OpenAI({
 const QDRANT_URL = process.env.QDRANT_URL || 'http://localhost:6333';
 const COLLECTION_NAME = 'digilife_knowledge';
 
+// SerpAPI Setup untuk web search
+const SERPAPI_KEY = process.env.SERPAPI_KEY || '73c6ddd39e29710be693f3487595318d872b0ea6cebd4e34e399dfd9a14f9994';
+
 let qdrant;
 try {
   qdrant = new QdrantClient({ url: QDRANT_URL });
@@ -1196,6 +1199,47 @@ async function searchKnowledge(userQuery, topK = 3) {
   }
 }
 
+// Fungsi untuk web search menggunakan SerpAPI (untuk query di luar knowledge base)
+async function webSearch(userQuery, topK = 3) {
+  if (!SERPAPI_KEY) {
+    console.log('⚠️ SerpAPI key not available, skipping web search');
+    return [];
+  }
+
+  try {
+    console.log(`🌐 Searching internet for: "${userQuery}"`);
+    
+    const response = await axios.get('https://serpapi.com/search', {
+      params: {
+        q: userQuery,
+        api_key: SERPAPI_KEY,
+        num: topK,
+        engine: 'google',
+      },
+    });
+    
+    const results = response.data.organic_results || [];
+    
+    if (results.length === 0) {
+      console.log('   ⚠️  No web search results found');
+      return [];
+    }
+    
+    console.log(`   ✅ Found ${results.length} web search results`);
+    
+    // Format results untuk context
+    return results.slice(0, topK).map(result => ({
+      category: 'WEB_SEARCH',
+      topic: result.title,
+      content: `${result.snippet}\n\nSource: ${result.link}`,
+      url: result.link,
+    }));
+  } catch (error) {
+    console.error('❌ Error with web search:', error.message);
+    return [];
+  }
+}
+
 // Fungsi untuk generate response menggunakan LLM dengan RAG
 async function generateResponse(userMessage, pricingResult, customerName = null, knowledgeContexts = [], conversationHistory = []) {
   let systemPrompt = `Kamu adalah CS support untuk layanan subscription produk digital (Netflix, YouTube Premium, Disney+, Spotify, dll).
@@ -1540,7 +1584,14 @@ Setelah transfer, mohon konfirmasi ya! 🙏🏻`;
     }
 
     // Search knowledge dari Vector DB untuk RAG
-    const knowledgeContexts = await searchKnowledge(messageText, 3);
+    let knowledgeContexts = await searchKnowledge(messageText, 3);
+
+    // Auto web search jika knowledge base kosong atau score rendah
+    if (knowledgeContexts.length === 0) {
+      console.log(`💡 Knowledge base empty, triggering web search...`);
+      const webResults = await webSearch(messageText, 3);
+      knowledgeContexts = webResults;
+    }
 
     // Check product availability
     const availability = await checkProductAvailability(groupData, pricingData, customerData);
