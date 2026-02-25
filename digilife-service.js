@@ -66,7 +66,7 @@ async function lookupCustomerName(phoneNumber) {
   try {
     const clean = phoneNumber.replace(/[^0-9]/g, '');
     const result = await pgPool.query(
-      `SELECT nama FROM customer_master WHERE REGEXP_REPLACE(wa_number, '[^0-9]', '', 'g') = $1 LIMIT 1`,
+      `SELECT nama FROM customer_subscriptions WHERE REGEXP_REPLACE(wa_pelanggan, '[^0-9]', '', 'g') = $1 LIMIT 1`,
       [clean]
     );
     return result.rows.length > 0 ? result.rows[0].nama : null;
@@ -190,21 +190,19 @@ async function loadCustomerData() {
   try {
     const result = await pgPool.query(
       `SELECT
-         cm.id              AS customer_id,
-         cm.nama,
-         cm.wa_number        AS wa_pelanggan,
-         cm.email,
-         cs.id              AS sub_id,
-         cs.produk,
-         cs.produk           AS subscription,
-         cs.start_date       AS start_membership,
-         cs.end_date         AS end_membership,
-         cs.status           AS status_payment,
-         cs.slot
-       FROM customer_master cm
-       LEFT JOIN customer_subscriptions cs
-         ON cs.customer_id = cm.id AND cs.active = true
-       ORDER BY cm.nama`
+         id              AS customer_id,
+         id              AS sub_id,
+         nama,
+         wa_pelanggan,
+         email,
+         produk,
+         subscription,
+         start_membership,
+         end_membership,
+         status_payment,
+         slot
+       FROM customer_subscriptions
+       ORDER BY nama`
     );
 
     const customers = result.rows.map(row => ({
@@ -720,8 +718,8 @@ async function processPaymentConfirmation(command, customers) {
 
     await pgPool.query(
       `UPDATE customer_subscriptions
-          SET end_date = $1,
-              status   = 'PAID',
+          SET end_membership = $1,
+              status_payment = 'PAID',
               updated_at = NOW()
         WHERE id = $2`,
       [newExpDate, customer.sub_id]

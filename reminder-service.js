@@ -53,26 +53,20 @@ async function loadExpiringCustomers(daysTarget) {
   try {
     const result = await pool.query(
       `SELECT
-        cm.id    AS customer_id,
-        cm.nama,
-        cm.wa_number,
-        cs.id    AS sub_id,
-        cs.produk,
-        cs.end_date,
-        cs.status,
-        cs.slot,
-        cs.subscription_name,
-        cs.reminded_h5_at,
-        cs.reminded_h1_at,
-        g.name   AS group_name,
-        g.email  AS group_email,
-        g.code   AS group_code
-       FROM customer_subscriptions cs
-       JOIN customer_master cm ON cs.customer_id = cm.id
-       LEFT JOIN groups g      ON UPPER(g.name) = UPPER(cs.produk)
-       WHERE cs.active = true
-         AND DATE(cs.end_date) = CURRENT_DATE + INTERVAL '${daysTarget} days'
-       ORDER BY cm.nama`
+        id              AS sub_id,
+        id              AS customer_id,
+        nama,
+        wa_pelanggan,
+        produk,
+        end_membership,
+        status_payment,
+        slot,
+        reminded_h5_at,
+        reminded_h1_at,
+        email           AS group_email
+       FROM customer_subscriptions
+       WHERE DATE(end_membership) = CURRENT_DATE + INTERVAL '${daysTarget} days'
+       ORDER BY nama`
     );
     console.log(`   ðŸ“‹ Found ${result.rows.length} subscribers expiring in ${daysTarget} day(s)`);
     return result.rows;
@@ -89,7 +83,7 @@ function generateMessage(customer, daysLeft) {
   const slotInfo     = customer.slot  ? ` (Slot ${customer.slot})` : '';
   const familyAcct   = isFamily(produk);
   const emailInfo    = familyAcct && customer.group_email ? ` yg akun _${customer.group_email}_` : '';
-  const formattedDate = formatDate(customer.end_date);
+  const formattedDate = formatDate(customer.end_membership);
 
   if (daysLeft === 5) {
     return (
@@ -139,9 +133,8 @@ async function clearPaidExpiring() {
           SET status = NULL,
               reminded_h5_at = NULL,
               reminded_h1_at = NULL
-        WHERE active = true
-          AND DATE(end_date) = CURRENT_DATE + INTERVAL '7 days'
-          AND UPPER(status) = 'PAID'
+        WHERE DATE(end_membership) = CURRENT_DATE + INTERVAL '7 days'
+          AND UPPER(status_payment) = 'PAID'
        RETURNING id`
     );
     console.log(`   ðŸ—‘ï¸  Cleared PAID status for ${result.rowCount} subscription(s)`);
@@ -167,8 +160,8 @@ async function checkAndSendReminders(daysTarget) {
   let sent = 0;
 
   for (const c of customers) {
-    if (!c.wa_number) {
-      console.log(`   âš ï¸  Skip ${c.nama} - no WhatsApp number`);
+    if (!c.wa_pelanggan) {
+      console.log(`   ⚠️  Skip ${c.nama} - no WhatsApp number`);
       continue;
     }
 
@@ -181,7 +174,7 @@ async function checkAndSendReminders(daysTarget) {
     const message = generateMessage(c, daysTarget);
     if (!message) continue;
 
-    const ok = await sendWhatsAppMessage(c.wa_number, message);
+    const ok = await sendWhatsAppMessage(c.wa_pelanggan, message);
     if (ok) {
       await markReminded(c.sub_id, daysTarget);
       sent++;
