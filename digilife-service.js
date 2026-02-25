@@ -903,40 +903,52 @@ Row: ${customer.rowIndex}`
 // Helper: Find product(s) di availability map berdasarkan user message
 // Returns array of matching products sorted by: available first, then by slot count
 function detectProductFromMessage(message, availabilityMap) {
-  const msg = message.toLowerCase();
+  const msg = message.toLowerCase().replace(/[+.]/g, '');
   const matches = [];
-  
-  // Find all products that match keywords
+
+  // Keyword aliases for common shorthand
+  const aliases = {
+    'disney':   ['disney', 'disney+', 'hotstar'],
+    'netflix':  ['netflix', 'nf'],
+    'youtube':  ['youtube', 'yt', 'ytb'],
+    'spotify':  ['spotify'],
+    'hbo':      ['hbo', 'hbomax', 'hbo max'],
+    'prime':    ['prime', 'amazon'],
+    'canva':    ['canva'],
+    'microsoft':['microsoft', 'ms365', 'office'],
+    'capcut':   ['capcut'],
+    'vpn':      ['vpn'],
+    'apple':    ['apple music'],
+  };
+
   for (const productName of Object.keys(availabilityMap)) {
-    const nameWords = productName.toLowerCase().split(' ');
-    const mainKeyword = nameWords[0]; // Get first word as main keyword
-    
-    // Check if message mengandung product keyword
-    if (msg.includes(mainKeyword)) {
-      // Skip parent/template records (yang tanpa nomor variant)
-      // Parent records biasanya: "YOUTUBE PREMIUM", "CANVA PRO", "MICROSOFT 365" (generic name without number)
-      // Actual variants: "#YouTube Premium 11", "CANVA PRO 02", "#MICROSOFT 365 - 11"
-      const hasVariant = /\d/.test(productName); // Check if contains any digit (variant number)
-      
+    const nameLower = productName.toLowerCase().replace(/[+.]/g, '');
+    const nameWords = nameLower.split(' ');
+
+    // Check direct word match OR alias match
+    const directMatch = nameWords.some(w => w.length > 3 && msg.includes(w));
+    const aliasMatch  = Object.entries(aliases).some(([key, aliasList]) =>
+      nameLower.includes(key) && aliasList.some(a => msg.includes(a.replace(/[+.]/g, '')))
+    );
+
+    if (directMatch || aliasMatch) {
+      const hasVariant = /\d/.test(productName);
       if (hasVariant || availabilityMap[productName].totalSlots > 0) {
-        // Include if: has variant number OR has slots (to catch edge cases)
         matches.push({
-          name: productName,
+          name:      productName,
           available: availabilityMap[productName].available,
-          slots: availabilityMap[productName].totalSlots
+          slots:     availabilityMap[productName].totalSlots,
         });
       }
     }
   }
-  
+
   // Sort: available products first, then by slot count (highest first)
   matches.sort((a, b) => {
-    if (a.available !== b.available) {
-      return a.available ? -1 : 1;
-    }
+    if (a.available !== b.available) return a.available ? -1 : 1;
     return (b.slots || 0) - (a.slots || 0);
   });
-  
+
   // Return either single match atau array jika multiple variants
   if (matches.length === 1) {
     return matches[0].name;
@@ -970,12 +982,13 @@ Kategori intent:
 1. **troubleshooting** - Masalah OTP, password, login, akun error → {"intent": "support"}
 2. **renewal** - Mau perpanjang langganan, tanya cara bayar, transfer, konfirmasi bayar → {"intent": "renewal", "product": "nama produk dari history jika tidak disebutkan"}
 3. **price_inquiry** - Tanya harga spesifik → extract product & duration
-4. **product_info** - Tanya "basic/premium/family", "ada apa aja", kategori produk → {"intent": "product_catalog"}
-5. **greeting** - Halo, hi, salam → {"intent": "greeting"}
+4. **availability_inquiry** - Tanya apakah produk tersedia/ada slot/ready/kosong/full ("ada?", "ready?", "ada slot?", "masih ada?", "kosong gak?") → {"intent": "availability_inquiry", "product": "nama produk"}
+5. **product_info** - Tanya "basic/premium/family", "ada apa aja", kategori produk → {"intent": "product_catalog"}
+6. **greeting** - Halo, hi, salam → {"intent": "greeting"}
 
 Response format JSON:
 {
-  "intent": "support" | "renewal" | "price_inquiry" | "product_catalog" | "greeting" | "unclear",
+  "intent": "support" | "renewal" | "price_inquiry" | "availability_inquiry" | "product_catalog" | "greeting" | "unclear",
   "product": "nama produk atau null",
   "duration": "durasi atau null",
   "issue_type": "otp" | "password" | "login" | null
@@ -1126,7 +1139,9 @@ Prioritas: SUPPORT CUSTOMER, bukan jualan. Customer biasanya menanyakan:
 3. Jarang yang tanya harga duluan
 
 ⚠️ IMPORTANT - KAPAN HARUS DEFER KE ADMIN:
-- Jika customer request langganan BARU (bukan perpanjangan) → Bilang "Tim admin akan proses"
+- Jika customer request langganan BARU (bukan perpanjangan) DAN belum tahu harga/produk → Bilang "Tim admin akan proses"
+- ⚠️ JANGAN defer jika customer HANYA tanya harga atau cek ketersediaan slot — itu bukan new subscription request
+- ⚠️ JANGAN defer jika customer bilang "ada slot?", "ready?", "available?", "berapa harga?" — jawab langsung dari data
 - Jika pertanyaan TIDAK JELAS atau AMBIGUOUS → Jangan tebak-tebak, bilang "Bisa dijelaskan lebih detail?"
 - Jika conversation sudah melibatkan ADMIN (lihat conversation history) → Jangan interrupt, respond minimal
 - Jika customer konfirmasi pembayaran/transfer → Bilang "Terima kasih, admin akan cek konfirmasi pembayaran"
