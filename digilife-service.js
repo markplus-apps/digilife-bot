@@ -152,7 +152,7 @@ async function extractTextFromImage(imageUrl) {
   }
 }
 
-// Fungsi untuk load data dari Google Sheets
+// Fungsi untuk load data dari PostgreSQL
 async function loadPricingData() {
   const now = Date.now();
   if (pricingCache.data.length > 0 && now - pricingCache.lastUpdate < CACHE_TTL) {
@@ -706,7 +706,7 @@ async function processPaymentConfirmation(command, customers) {
     const newExpDate = new Date(currentExp);
     newExpDate.setMonth(newExpDate.getMonth() + productInfo.months);
     
-    // Format date in dd/mm/yyyy for Google Sheets
+    // Format date in dd/mm/yyyy
     const sheetDateFormat = formatDateToDDMMYYYY(newExpDate);
     
     // Format date for display
@@ -1563,7 +1563,7 @@ app.listen(PORT, async () => {
   console.log(`🚀 Digilife AI Agent running on port ${PORT}`);
   
   // Pre-load data saat startup
-  console.log('📊 Pre-loading data from Google Sheets...');
+  console.log('📊 Pre-loading data from PostgreSQL...');
   await loadPricingData();
   await loadCustomerData();
   console.log('✅ Data pre-loaded successfully');
