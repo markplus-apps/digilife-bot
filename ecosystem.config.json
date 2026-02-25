@@ -1,0 +1,41 @@
+{
+  "apps": [
+    {
+      "name": "digilife",
+      "script": "digilife-service.js",
+      "instances": 1,
+      "exec_mode": "fork",
+      "env": {
+        "NODE_ENV": "production"
+      },
+      "error_file": "logs/digilife-error.log",
+      "out_file": "logs/digilife-out.log",
+      "log_date_format": "YYYY-MM-DD HH:mm:ss Z"
+    },
+    {
+      "name": "reminder",
+      "script": "reminder-service.js",
+      "instances": 1,
+      "exec_mode": "fork",
+      "cron_restart": "0 0 * * *",
+      "env": {
+        "NODE_ENV": "production"
+      },
+      "error_file": "logs/reminder-error.log",
+      "out_file": "logs/reminder-out.log",
+      "log_date_format": "YYYY-MM-DD HH:mm:ss Z"
+    },
+    {
+      "name": "fonnte-bot",
+      "script": "fonnte-bot.js",
+      "instances": 1,
+      "exec_mode": "fork",
+      "env": {
+        "NODE_ENV": "production"
+      },
+      "error_file": "logs/fonnte-bot-error.log",
+      "out_file": "logs/fonnte-bot-out.log",
+      "log_date_format": "YYYY-MM-DD HH:mm:ss Z"
+    }
+  ]
+}
