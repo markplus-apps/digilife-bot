@@ -1670,6 +1670,90 @@ app.get('/availability', async (req, res) => {
   }
 });
 
+// Admin endpoint: Ingest knowledge document ke Qdrant
+app.post('/admin/ingest-knowledge', async (req, res) => {
+  try {
+    const { adminPhone, adminPassword, category, topic, content } = req.body;
+
+    // Verify admin authentication
+    const cleanPhone = (adminPhone || '').replace(/[^0-9]/g, '');
+    const isPhoneAdmin = cleanPhone && ADMIN_NUMBERS.some(admin => 
+      admin.replace(/[^0-9]/g, '') === cleanPhone
+    );
+    const isPasswordAdmin = adminPassword === process.env.ADMIN_PASSWORD;
+
+    if (!isPhoneAdmin && !isPasswordAdmin) {
+      return res.status(403).json({
+        success: false,
+        error: '❌ Unauthorized: Invalid admin credentials'
+      });
+    }
+
+    // Validate input
+    if (!category || !topic || !content) {
+      return res.status(400).json({
+        success: false,
+        error: '❌ Missing required fields: category, topic, content'
+      });
+    }
+
+    if (!qdrant) {
+      return res.status(503).json({
+        success: false,
+        error: '❌ Qdrant service unavailable'
+      });
+    }
+
+    console.log(`📚 Admin ingest knowledge: [${category}] ${topic}`);
+
+    // Generate embedding untuk content
+    const embeddingResponse = await openai.embeddings.create({
+      model: 'text-embedding-3-small',
+      input: content,
+    });
+
+    const embedding = embeddingResponse.data[0].embedding;
+
+    // Create unique ID untuk document (timestamp-based)
+    const docId = Date.now() + Math.floor(Math.random() * 10000);
+
+    // Prepare payload
+    const payload = {
+      category: category.trim(),
+      topic: topic.trim(),
+      content: content.trim(),
+      created_at: new Date().toISOString(),
+      source: 'admin_ingest'
+    };
+
+    // Upsert point ke Qdrant
+    await qdrant.upsert(COLLECTION_NAME, {
+      points: [
+        {
+          id: docId,
+          vector: embedding,
+          payload: payload
+        }
+      ]
+    });
+
+    console.log(`✅ Knowledge ingested successfully (ID: ${docId})`);
+
+    res.json({
+      success: true,
+      message: `✅ Knowledge document ingested: [${category}] ${topic}`,
+      docId: docId,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('❌ Error ingesting knowledge:', error.message);
+    res.status(500).json({
+      success: false,
+      error: `❌ Ingest failed: ${error.message}`
+    });
+  }
+});
+
 // Start server
 app.listen(PORT, async () => {
   console.log(`🚀 Digilife AI Agent running on port ${PORT}`);
