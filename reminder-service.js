@@ -200,10 +200,10 @@ app.use(express.json());
 
 app.post('/trigger-reminder', async (req, res) => {
   try {
-    const { type } = req.body;
+    const type = (req.body && req.body.type) || req.query.type;
     const typeMap = { h7: 7, h5: 5, h1: 1 };
 
-    if (!typeMap[type]) {
+    if (!type || !typeMap[type]) {
       return res.status(400).json({ error: 'Invalid type. Use: h1, h5, or h7' });
     }
 
