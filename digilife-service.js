@@ -66,7 +66,10 @@ async function lookupCustomerName(phoneNumber) {
   try {
     const clean = phoneNumber.replace(/[^0-9]/g, '');
     const result = await pgPool.query(
-      `SELECT nama FROM customer_subscriptions WHERE REGEXP_REPLACE(wa_pelanggan, '[^0-9]', '', 'g') = $1 LIMIT 1`,
+      `SELECT nama FROM customer_master WHERE REGEXP_REPLACE(wa_pelanggan, '[^0-9]', '', 'g') = $1
+       UNION
+       SELECT nama FROM customer_subscriptions WHERE REGEXP_REPLACE(wa_pelanggan, '[^0-9]', '', 'g') = $1
+       LIMIT 1`,
       [clean]
     );
     return result.rows.length > 0 ? result.rows[0].nama : null;

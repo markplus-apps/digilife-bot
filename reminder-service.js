@@ -66,6 +66,7 @@ async function loadExpiringCustomers(daysTarget) {
         email           AS group_email
        FROM customer_subscriptions
        WHERE DATE(end_membership) = CURRENT_DATE + INTERVAL '${daysTarget} days'
+         AND UPPER(COALESCE(status_payment,'')) != 'FREE'
        ORDER BY nama`
     );
     console.log(`   ðŸ“‹ Found ${result.rows.length} subscribers expiring in ${daysTarget} day(s)`);
