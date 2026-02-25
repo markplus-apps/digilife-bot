@@ -938,18 +938,28 @@ function detectProductFromMessage(message, availabilityMap) {
   return null;
 }
 
-async function extractIntent(userMessage, pricingData) {
+async function extractIntent(userMessage, pricingData, conversationHistory = []) {
   const productList = [...new Set(pricingData.map(p => p.product))].join(', ');
+
+  // Build history context string (last 4 messages) supaya pesan pendek bisa dipahami dalam konteks
+  let historyContext = '';
+  if (conversationHistory.length > 0) {
+    const recent = conversationHistory.slice(-4);
+    historyContext = `\n\nHistory percakapan sebelumnya (gunakan sebagai konteks):\n` +
+      recent.map(m => `${m.role === 'user' ? 'Customer' : 'Bot'}: ${m.content.substring(0, 150)}`).join('\n');
+  }
   
   const prompt = `Analisa pertanyaan customer service ini dan kategorisasi:
 
-Produk tersedia: ${productList}
+Produk tersedia: ${productList}${historyContext}
 
-Customer: "${userMessage}"
+Pesan terbaru customer: "${userMessage}"
+
+PERHATIAN: Gunakan history di atas sebagai konteks. Contoh: jika history bicara soal YouTube Premium dan pesan baru adalah "bayarnya gimana?" atau "transfer kemana?", itu adalah intent "renewal" dengan product "YouTube Premium".
 
 Kategori intent:
 1. **troubleshooting** - Masalah OTP, password, login, akun error → {"intent": "support"}
-2. **renewal** - Mau perpanjang langganan, tanya expired → {"intent": "renewal"}
+2. **renewal** - Mau perpanjang langganan, tanya cara bayar, transfer, konfirmasi bayar → {"intent": "renewal", "product": "nama produk dari history jika tidak disebutkan"}
 3. **price_inquiry** - Tanya harga spesifik → extract product & duration
 4. **product_info** - Tanya "basic/premium/family", "ada apa aja", kategori produk → {"intent": "product_catalog"}
 5. **greeting** - Halo, hi, salam → {"intent": "greeting"}
@@ -1162,6 +1172,9 @@ ATURAN RESPONSE:
   if (customerName) {
     systemPrompt += `\n\nNama customer: *${customerName}* (pelanggan terdaftar). Sapa dengan "ka *${customerName}*" di awal balasan pertama dalam percakapan.`;
   }
+
+  // Instruksi penggunaan history — penting untuk pesan pendek/ambigu
+  systemPrompt += `\n\n⚠️ GUNAKAN CONVERSATION HISTORY: Sebelum meminta klarifikasi, cek dulu history di atas. Jika context sudah jelas dari percakapan sebelumnya (contoh: user baru tanya harga YouTube lalu bertanya "bayarnya gimana?"), JAWAB LANGSUNG menggunakan konteks itu. Jangan tanya ulang produk yang sudah disebutkan dalam history.`;
 
   // Tambahkan knowledge context dari Vector DB jika ada
   if (knowledgeContexts.length > 0) {
@@ -1382,15 +1395,15 @@ Mohon tunggu sebentar ya! 🙏`;
       return res.json({ success: true, message: 'Deferred to admin' });
     }
 
-    // Extract intent
-    const intent = await extractIntent(messageText, pricingData);
-    console.log(`🎯 Intent detected:`, intent);
-
-    // Get conversation history dari PostgreSQL (persistent)
+    // Get conversation history dari PostgreSQL (persistent) — load DULU sebelum extractIntent
     const conversationHistory = await getConversationHistoryPG(phoneNumber);
     if (conversationHistory.length > 0) {
       console.log(`💬 Conversation history: ${conversationHistory.length} messages (PostgreSQL)`);
     }
+
+    // Extract intent — pass history supaya pesan pendek/ambigu bisa menggunakan konteks
+    const intent = await extractIntent(messageText, pricingData, conversationHistory);
+    console.log(`🎯 Intent detected:`, intent);
 
     // Check if customer confirms renewal/extension
     const confirmKeywords = ['iya perpanjang', 'mau perpanjang', 'perpanjang', 'iya lanjut', 'ok perpanjang', 'ya perpanjang', 'iya extend', 'mau bayar', 'bayar sekarang'];
@@ -1435,10 +1448,21 @@ Setelah transfer, mohon konfirmasi ya! 🙏🏻`;
 
     let responseText = '';
 
-    // First try: Detect product langsung dari message (lebih akurat)
-    const detectedProducts = detectProductFromMessage(messageText, availability);
-    
-    if (detectedProducts) {
+    // Jika intent adalah price_inquiry → LANGSUNG ke GPT, jangan intercept dengan availability check
+    // Ini mencegah "berapa harga netflix?" dijawab dengan FULL/KOSONG
+    if (intent.intent === 'price_inquiry') {
+      console.log(`💰 Price inquiry detected → routing to GPT (skipping availability check)`);
+      responseText = await generateResponse(messageText, null, customerDbName || senderName, knowledgeContexts, conversationHistory);
+    }
+
+    // Availability check: hanya untuk pesan yang bukan price_inquiry
+    const detectedProducts = intent.intent !== 'price_inquiry'
+      ? detectProductFromMessage(messageText, availability)
+      : null;
+
+    if (responseText) {
+      // sudah di-handle di atas (price_inquiry)
+    } else if (detectedProducts) {
       // Handle case dimana ada multiple variants (array)
       const productList = Array.isArray(detectedProducts) ? detectedProducts : [detectedProducts];
       // firstProduct is already sorted: available products first
@@ -1475,29 +1499,6 @@ Minat? Ketik "iya" atau hub admin! 🎯`;
             }
           }
         }
-      }
-    } else if (intent.intent === 'price_inquiry' && intent.product) {
-      // Fallback: Use LLM-detected intent
-      const availabilityStatus = availability[intent.product];
-      
-      if (availabilityStatus && availabilityStatus.available) {
-        // AVAILABLE - tampilkan harga jika ada
-        let priceInfo = '';
-        if (intent.duration) {
-          const pricingResult = queryPricing(pricingData, intent.product, intent.duration);
-          if (pricingResult) {
-            priceInfo = `\n*Harga: Rp ${pricingResult.price.toLocaleString('id-ID')}* (${pricingResult.duration})`;
-          }
-        }
-        
-        responseText = `✅ *${intent.product}* TERSEDIA!${priceInfo}
-
-Minat? Ketik "iya" atau hub admin! 🎯`;
-      } else {
-        // KOSONG/FULL
-        responseText = `❌ Maaf, *${intent.product}* saat ini **FULL/KOSONG** 🙏
-
-Tunggu slot terbuka atau tanya admin untuk alternatif!`;
       }
     } else {
       // No product detected - use LLM for general response
