@@ -79,22 +79,22 @@ async function lookupCustomerName(phoneNumber) {
 }
 
 // Get conversation history dari PostgreSQL
-async function getConversationHistoryPG(phoneNumber, limit = 10) {
+async function getConversationHistoryPG(phoneNumber, limit = 20) {
   try {
     const clean = phoneNumber.replace(/[^0-9]/g, '');
     const result = await pgPool.query(
-      `SELECT message_text, response_text FROM conversations
-       WHERE customer_phone = $1
+      `SELECT message_type, message_text FROM conversations
+       WHERE wa_number = $1
        ORDER BY created_at DESC LIMIT $2`,
       [clean, limit]
     );
     // Convert to [{role,content}] format, oldest first
-    return result.rows.reverse().flatMap(r => [
-      { role: 'user', content: r.message_text },
-      { role: 'assistant', content: r.response_text },
-    ]);
+    return result.rows.reverse().map(r => ({
+      role: r.message_type === 'incoming' ? 'user' : 'assistant',
+      content: r.message_text,
+    }));
   } catch (e) {
-    // Fallback to NodeCache
+    console.error('❌ getConversationHistoryPG error:', e.message);
     return conversationCache.get(phoneNumber) || [];
   }
 }
@@ -103,11 +103,14 @@ async function getConversationHistoryPG(phoneNumber, limit = 10) {
 async function saveConversationPG(phoneNumber, message, response) {
   try {
     const clean = phoneNumber.replace(/[^0-9]/g, '');
+    // Insert user message (incoming) dan bot response (outgoing) sebagai 2 rows terpisah
     await pgPool.query(
-      `INSERT INTO conversations (customer_phone, message_text, response_text) VALUES ($1, $2, $3)`,
+      `INSERT INTO conversations (wa_number, message_type, message_text, is_handled_by_bot)
+       VALUES ($1, 'incoming', $2, false), ($1, 'outgoing', $3, true)`,
       [clean, message, response]
     );
   } catch (e) {
+    console.error('❌ saveConversationPG error:', e.message);
     // Fallback: save to NodeCache
     updateConversationHistory(phoneNumber, 'user', message);
     updateConversationHistory(phoneNumber, 'assistant', response);
