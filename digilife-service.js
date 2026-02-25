@@ -127,6 +127,57 @@ async function checkRenewalReminder(phoneNumber, productName) {
   }
 }
 
+// Helper: Get all subscriptions untuk satu customer
+async function getCustomerSubscriptions(phoneNumber) {
+  try {
+    const clean = phoneNumber.replace(/[^0-9]/g, '');
+    const result = await pgPool.query(
+      `SELECT produk, end_membership, status_payment, slot FROM customer_subscriptions 
+       WHERE wa_pelanggan = $1 AND status_payment IN ('ACTIVE', 'PENDING')
+       ORDER BY end_membership DESC`,
+      [clean]
+    );
+    
+    if (!result.rows || result.rows.length === 0) {
+      return null;
+    }
+    
+    // Format setiap subscription
+    const subscriptions = result.rows.map(row => {
+      const endDate = new Date(row.end_membership);
+      const today = new Date();
+      const daysLeft = Math.ceil((endDate - today) / (1000 * 60 * 60 * 24));
+      
+      let statusEmoji = '✅';
+      let statusText = 'AKTIF';
+      if (row.status_payment === 'PENDING') {
+        statusEmoji = '⏳';
+        statusText = 'MENUNGGU PEMBAYARAN';
+      } else if (daysLeft <= 7 && daysLeft > 0) {
+        statusEmoji = '⚠️';
+        statusText = `EXPIRED ${daysLeft} HARI LAGI`;
+      } else if (daysLeft <= 0) {
+        statusEmoji = '❌';
+        statusText = 'EXPIRED';
+      }
+      
+      return {
+        product: row.produk,
+        expiry: endDate.toLocaleDateString('id-ID'),
+        daysLeft,
+        status: statusText,
+        statusEmoji,
+        slot: row.slot || null,
+      };
+    });
+    
+    return subscriptions;
+  } catch (e) {
+    console.error('❌ getCustomerSubscriptions error:', e.message);
+    return null;
+  }
+}
+
 // Get conversation history dari PostgreSQL
 async function getConversationHistoryPG(phoneNumber, limit = 20) {
   try {
@@ -1053,11 +1104,12 @@ Kategori intent:
 3. **price_inquiry** - Tanya harga spesifik → extract product & duration
 4. **availability_inquiry** - Tanya apakah produk tersedia/ada slot/ready/kosong/full ("ada?", "ready?", "ada slot?", "masih ada?", "kosong gak?") → {"intent": "availability_inquiry", "product": "nama produk"}
 5. **product_info** - Tanya "basic/premium/family", "ada apa aja", kategori produk → {"intent": "product_catalog"}
-6. **greeting** - Halo, hi, salam → {"intent": "greeting"}
+6. **subscription_inquiry** - Tanya "saya langganan apa saja?", "daftar langganan saya", "langganan saya apa?", "saya punya produk apa?" → {"intent": "subscription_inquiry"}
+7. **greeting** - Halo, hi, salam → {"intent": "greeting"}
 
 Response format JSON:
 {
-  "intent": "support" | "renewal" | "price_inquiry" | "availability_inquiry" | "product_catalog" | "greeting" | "unclear",
+  "intent": "support" | "renewal" | "price_inquiry" | "availability_inquiry" | "product_catalog" | "subscription_inquiry" | "greeting" | "unclear",
   "product": "nama produk atau null",
   "duration": "durasi atau null",
   "issue_type": "otp" | "password" | "login" | null
@@ -1598,10 +1650,40 @@ Setelah transfer, mohon konfirmasi ya! 🙏🏻`;
 
     let responseText = '';
 
+    // Handle subscription_inquiry: Tanya langganan apa saja
+    if (intent.intent === 'subscription_inquiry' && isRegisteredCustomer) {
+      console.log(`📋 Subscription inquiry detected`);
+      
+      const subscriptions = await getCustomerSubscriptions(phoneNumber);
+      
+      if (subscriptions && subscriptions.length > 0) {
+        // Format list with status dan expiry
+        let subscriptionList = `📋 *Langganan Anda:*\n\n`;
+        subscriptions.forEach(sub => {
+          subscriptionList += `${sub.statusEmoji} *${sub.product}*\n`;
+          subscriptionList += `   Status: ${sub.statusText}\n`;
+          subscriptionList += `   Expired: ${sub.expiry}`;
+          if (sub.daysLeft > 0 && sub.daysLeft <= 7) {
+            subscriptionList += ` (${sub.daysLeft} hari lagi)`;
+          }
+          subscriptionList += `\n`;
+          if (sub.slot) {
+            subscriptionList += `   Slot: ${sub.slot}/5\n`;
+          }
+          subscriptionList += `\n`;
+        });
+        
+        subscriptionList += `Mau info lebih lanjut atau perpanjang? Tanya aja! 😊`;
+        responseText = subscriptionList;
+      } else {
+        responseText = `Maaf ${customerDbName || senderName}, Anda belum punya langganan apapun. 😔\n\nMau berlangganan produk digital? Tanya-tanya aja produk apa yang tersedia! 🎯`;
+      }
+    }
+
     // Jika intent adalah price_inquiry → LANGSUNG ke GPT, jangan intercept dengan availability check
     // Ini mencegah "berapa harga netflix?" dijawab dengan FULL/KOSONG
     // HANYA untuk registered customer
-    if (intent.intent === 'price_inquiry' && isRegisteredCustomer) {
+    else if (intent.intent === 'price_inquiry' && isRegisteredCustomer) {
       console.log(`💰 Price inquiry detected → routing to GPT with full pricing data`);
 
       // Build pricing context dari pricingData — filter by product jika intent.product diketahui
@@ -1640,8 +1722,8 @@ Setelah transfer, mohon konfirmasi ya! 🙏🏻`;
       responseText = renewalReminder ? renewalReminder + priceResponse : priceResponse;
     }
 
-    // Availability check: hanya untuk pesan yang bukan price_inquiry DAN hanya untuk registered customer
-    const detectedProducts = (intent.intent !== 'price_inquiry' && isRegisteredCustomer)
+    // Availability check: hanya untuk pesan yang bukan price_inquiry/subscription_inquiry DAN hanya untuk registered customer
+    const detectedProducts = (intent.intent !== 'price_inquiry' && intent.intent !== 'subscription_inquiry' && isRegisteredCustomer)
       ? detectProductFromMessage(messageText, availability)
       : null;
 
