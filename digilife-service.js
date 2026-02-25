@@ -1199,11 +1199,19 @@ Jawab dengan cek produk dan akun mereka, tanyakan: "Untuk perpanjangan [produk] 
 ATURAN RESPONSE:
 1. Deteksi bahasa user (ID/EN) dan jawab dengan bahasa yang sama
 2. Kalau tanya "Basic/Premium/Family" → jelaskan kategori produk di atas (bukan paket DigiLife)
-3. Format harga promo: ~Rp 76.000~ *Rp 70.000* (WhatsApp strikethrough & bold, JANGAN tulis kata "coret")
+3. ⚠️ FORMAT HARGA:
+   - Tampilkan sebagai BULLET LIST dengan `-` (tidak boleh numbered)
+   - Contoh: `- 1 bulan: *Rp 55.000*` (bold harga)
+   - Jika ada promo: `- 1 bulan: ~Rp 76.000~ *Rp 70.000*` (strikethrough normal, bold promo)
+   - ⛔ JANGAN gunakan asterisk di strikethrough: salah `~Rp 76.000*`, benar: `~Rp 76.000~`
 4. ⛔ DILARANG KERAS mengarang atau menghitung harga — hanya tampilkan harga yang ADA PERSIS di KNOWLEDGE BASE
 5. ⛔ DILARANG menampilkan durasi yang TIDAK ADA di KNOWLEDGE BASE (contoh: jangan tulis "12 bulan" jika tidak ada di list)
-6. Jika durasi yang ditanya tidak ada di data → jawab "Untuk durasi tersebut belum tersedia ka, tersedia [sebutkan hanya yang ada]"
-7. Kalau tidak jelas, tanya spesifik: "Untuk produk apa kak? Netflix, YouTube, atau yang lain?"`;
+6. ⛔ JANGAN sebutkan variant lain yang kosong/SOLD OUT kecuali customer EKSPLISIT tanya (contoh: "variant lain apa saja?")
+   - Jika customer tanya "harga Netflix TV", cukup tampilkan TV Shared & TV Exclusive variants + harganya
+   - JANGAN ikut mention "TV Exclusive SOLD OUT" atau "Non-TV" kecuali mereka minta
+7. Jika durasi yang ditanya tidak ada di data → jawab "Untuk durasi tersebut belum tersedia ka, tersedia [sebutkan hanya yang ada]"
+8. Response singkat & to-the-point — JANGAN tambahin closing verbose seperti "Jika ada yang ingin kamu tanyakan lebih lanjut, silakan beri tahu!" atau "Jangan ragu untuk menghubungi!"
+9. Kalau tidak jelas, tanya spesifik: "Untuk produk apa kak? Netflix, YouTube, atau yang lain?"`;
 
   if (customerName) {
     systemPrompt += `\n\nNama customer: *${customerName}* (pelanggan terdaftar). Sapa dengan "ka *${customerName}*" di awal balasan pertama dalam percakapan.`;
@@ -1237,7 +1245,11 @@ Response: Jawab natural, format harga ~Rp X~ *Rp Y* jika ada promo (gunakan What
   } else {
     const hasPricingContext = knowledgeContexts.some(ctx => ctx.category === 'PRICING');
     if (hasPricingContext) {
-      userPrompt += `\n\nGunakan data harga dari KNOWLEDGE BASE di atas untuk menjawab. Tampilkan semua durasi yang relevan. Format harga: *Rp X.XXX* (bold). Response harus natural, jangan robotic!`;
+      userPrompt += `\n\nGunakan data harga dari KNOWLEDGE BASE di atas untuk menjawab. Format: bullet list dengan tanda "-". Contoh:
+- 1 bulan: *Rp 55.000*
+- 3 bulan: ~Rp 76.000~ *Rp 70.000* (jika ada promo)
+
+Response singkat, jangan verbose. Harus natural, tidak robotic!`;
     } else {
       userPrompt += `\n\nTidak ada data harga spesifik. 
 Analisa dulu: Apakah pertanyaan tentang:
@@ -1506,18 +1518,18 @@ Setelah transfer, mohon konfirmasi ya! 🙏🏻`;
       }
 
       const pricingContextContent = pricingForContext.map(p => {
-        const hargaPromo = `Rp ${p.price.toLocaleString('id-ID')}`;
+        const hargaPromo = `*Rp ${p.price.toLocaleString('id-ID')}*`;
         if (p.price_normal > 0 && p.price_normal > p.price) {
-          const hargaNormal = `Rp ${p.price_normal.toLocaleString('id-ID')}`;
-          return `- ${p.product} ${p.duration}: ${hargaNormal} → PROMO ${hargaPromo}`;
+          const hargaNormal = `~Rp ${p.price_normal.toLocaleString('id-ID')}~`;
+          return `- ${p.product} ${p.duration}: ${hargaNormal} ${hargaPromo}`;
         }
         return `- ${p.product} ${p.duration}: ${hargaPromo}`;
       }).join('\n');
 
       const pricingKnowledge = {
         category: 'PRICING',
-        topic: 'Daftar harga produk DigiLife — INI ADALAH DATA LENGKAP. JANGAN tambahkan durasi atau harga yang tidak ada di list ini.',
-        content: pricingContextContent + '\n\n⚠️ HANYA tampilkan entri di atas. Durasi yang tidak tercantum = tidak tersedia.',
+        topic: 'Daftar harga produk DigiLife',
+        content: pricingContextContent + '\n\n⚠️ Tampilkan dalam format bullet list dengan tanda "-". HANYA tampilkan entri di atas. Durasi yang tidak tercantum = tidak tersedia.',
       };
 
       const enrichedKnowledgeContexts = [pricingKnowledge, ...knowledgeContexts];
