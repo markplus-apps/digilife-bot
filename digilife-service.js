@@ -903,6 +903,20 @@ Row: ${customer.rowIndex}`
 // Fungsi untuk extract intent dari pertanyaan user
 // Helper: Find product(s) di availability map berdasarkan user message
 // Returns array of matching products sorted by: available first, then by slot count
+// Ambil nama produk yang bersih dari nama group internal
+// e.g. "#Spotify Premium 10" → "Spotify Premium"
+// e.g. "Disney+ Hotstar Group 4" → "Disney+ Hotstar"
+// e.g. "HBO MAX 01 JUSTICE LEAGUE" → "HBO MAX"
+function extractProductDisplayName(groupName) {
+  return groupName
+    .replace(/^#/, '')                        // hapus leading #
+    .replace(/\s+Group\s+\d+.*$/i, '')        // hapus "Group N" dan setelahnya
+    .replace(/\s+\d{2}\s+[A-Z][A-Z\s]+$/, '') // hapus "01 JUSTICE LEAGUE" pattern
+    .replace(/\s+\d+$/, '')                   // hapus trailing number
+    .replace(/\s+-\s+.*$/, '')                // hapus " - SUBTITLE"
+    .trim();
+}
+
 function detectProductFromMessage(message, availabilityMap) {
   const msg = message.toLowerCase().replace(/[+.]/g, '');
   const matches = [];
@@ -1514,42 +1528,19 @@ Setelah transfer, mohon konfirmasi ya! 🙏🏻`;
     if (responseText) {
       // sudah di-handle di atas (price_inquiry)
     } else if (detectedProducts) {
-      // Handle case dimana ada multiple variants (array)
       const productList = Array.isArray(detectedProducts) ? detectedProducts : [detectedProducts];
-      // firstProduct is already sorted: available products first
-      const firstProduct = Array.isArray(detectedProducts) ? detectedProducts[0] : detectedProducts;
-      const availabilityStatus = availability[firstProduct];
-      
-      if (availabilityStatus.available) {
-        responseText = `✅ *${firstProduct}* TERSEDIA!
 
-Minat? Ketik "iya" atau hub admin! 🎯`;
-        
-        // If there are multiple variants, mention them
-        if (productList.length > 1) {
-          const otherVariants = productList.slice(1).filter(p => !availability[p].available);
-          if (otherVariants.length > 0) {
-            responseText += `\n\n(Varian lain: ${otherVariants.join(', ')} saat ini kosong)`;
-          }
-        }
+      // Hitung total slot tersedia dari semua matched groups
+      const availableGroups = productList.filter(p => availability[p] && availability[p].available);
+      const totalFreeSlots  = availableGroups.reduce((sum, p) => sum + (availability[p].totalSlots || 0), 0);
+
+      // Nama produk bersih untuk ditampilkan ke customer (tanpa nomor/nama group internal)
+      const displayName = extractProductDisplayName(productList[0]);
+
+      if (availableGroups.length > 0) {
+        responseText = `✅ *${displayName}* masih tersedia!\n\nMinat perpanjang atau berlangganan baru? Ketik "iya" atau hubungi admin! 🎯`;
       } else {
-        // Semua kosong
-        responseText = `❌ Maaf, *${firstProduct}* saat ini **FULL/KOSONG** 🙏
-
-Tunggu slot terbuka atau tanya admin untuk alternatif!`;
-        
-        // If there are multiple variants, check if any is available
-        if (productList.length > 1) {
-          const availableVariants = productList.filter(p => availability[p].available);
-          if (availableVariants.length > 0) {
-            responseText = `✅ *${availableVariants[0]}* TERSEDIA!
-
-Minat? Ketik "iya" atau hub admin! 🎯`;
-            if (availableVariants.length > 1) {
-              responseText += `\n\nVarian lain tersedia: ${availableVariants.slice(1).join(', ')}`;
-            }
-          }
-        }
+        responseText = `❌ Maaf, *${displayName}* saat ini *penuh/tidak tersedia* 🙏\n\nTunggu slot terbuka atau tanya admin untuk alternatif ya!`;
       }
     } else {
       // No product detected - use LLM for general response
