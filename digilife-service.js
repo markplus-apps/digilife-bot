@@ -3,7 +3,6 @@
 
 const express = require('express');
 const axios = require('axios');
-const { google } = require('googleapis');
 const fs = require('fs');
 const OpenAI = require('openai');
 const NodeCache = require('node-cache');
@@ -19,20 +18,6 @@ const BOT_API_URL = process.env.BOT_API_URL || 'http://localhost:3010/send-messa
 
 // Admin config untuk payment confirmation
 const ADMIN_NUMBERS = (process.env.ADMIN_NUMBERS || '628128933008').split(',').map(n => n.trim());
-
-// Google Sheets Setup
-const SPREADSHEET_ID = process.env.SPREADSHEET_ID || '1US9SqWny3hA6JogGSCxh6sOkr98ZrzzxER_mdAuqpsg';
-const CREDENTIALS_PATH = process.env.GOOGLE_CREDENTIALS_PATH || './google-credentials.json';
-
-// Get Google Sheets auth
-async function getAuthClient() {
-    const credentials = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, 'utf8'));
-    const auth = new google.auth.GoogleAuth({
-        credentials,
-        scopes: ['https://www.googleapis.com/auth/spreadsheets'],
-    });
-    return await auth.getClient();
-}
 
 // OpenAI Setup
 const openai = new OpenAI({
@@ -172,41 +157,27 @@ async function loadPricingData() {
   }
 
   try {
-    const authClient = await getAuthClient();
-    const sheets = google.sheets({ version: 'v4', auth: authClient });
-    
-    const response = await sheets.spreadsheets.values.get({
-      spreadsheetId: SPREADSHEET_ID,
-      range: 'Pricing!A:F',
-    });
+    const result = await pgPool.query(
+      `SELECT product, duration, price::numeric AS price, description
+       FROM pricing
+       WHERE is_active = true
+       ORDER BY product, duration`
+    );
 
-    const rows = response.data.values || [];
-    if (rows.length === 0) {
-      console.error('Sheet "Pricing" is empty');
-      return [];
-    }
-
-    const headers = rows[0];
-    const pricing = [];
-    
-    for (let i = 1; i < rows.length; i++) {
-      const row = rows[i];
-      pricing.push({
-        product: row[0] || '',
-        duration: row[1] || '',
-        price: parseInt(row[2]) || 0,
-        price_regular: parseInt(row[3]) || 0,
-        currency: row[4] || 'IDR',
-        updated_at: row[5] || '',
-      });
-    }
+    const pricing = result.rows.map(row => ({
+      product:       row.product || '',
+      duration:      row.duration || '',
+      price:         Math.round(parseFloat(row.price)) || 0,
+      price_regular: Math.round(parseFloat(row.price)) || 0,
+      currency:      'IDR',
+    }));
 
     pricingCache = { data: pricing, lastUpdate: now };
-    console.log(`✅ Loaded ${pricing.length} pricing items from Sheets`);
+    console.log(`✅ Loaded ${pricing.length} pricing items from PostgreSQL`);
     return pricing;
   } catch (error) {
     console.error('❌ Error loading pricing data:', error.message);
-    return pricingCache.data; // Return stale cache if available
+    return pricingCache.data;
   }
 }
 
@@ -217,50 +188,41 @@ async function loadCustomerData() {
   }
 
   try {
-    const authClient = await getAuthClient();
-    const sheets = google.sheets({ version: 'v4', auth: authClient });
-    
-    const response = await sheets.spreadsheets.values.get({
-      spreadsheetId: SPREADSHEET_ID,
-      range: 'Customer!A:R',
-    });
+    const result = await pgPool.query(
+      `SELECT
+         cm.id              AS customer_id,
+         cm.nama,
+         cm.wa_number        AS wa_pelanggan,
+         cm.email,
+         cs.id              AS sub_id,
+         cs.produk,
+         cs.produk           AS subscription,
+         cs.start_date       AS start_membership,
+         cs.end_date         AS end_membership,
+         cs.status           AS status_payment,
+         cs.slot
+       FROM customer_master cm
+       LEFT JOIN customer_subscriptions cs
+         ON cs.customer_id = cm.id AND cs.active = true
+       ORDER BY cm.nama`
+    );
 
-    const rows = response.data.values || [];
-    if (rows.length === 0) {
-      console.error('Sheet "Customer" is empty');
-      return [];
-    }
-
-    const headers = rows[0];
-    const customers = [];
-    
-    for (let i = 1; i < rows.length; i++) {
-      const row = rows[i];
-      customers.push({
-        rowIndex: i + 1, // Actual row number in Google Sheets (1-based)
-        no: row[0] || '',
-        nama: row[1] || '',
-        produk: row[2] || '',
-        subscription: row[3] || '',
-        profil_pin: row[4] || '',
-        member_since: row[5] || '', // Column F: Member since
-        start_membership: row[6] || '', // Column G: Start membership
-        end_membership: row[7] || '', // Column H: End membership
-        status_payment: row[8] || '', // Column I: Status payment
-        jumlah_payment: row[9] || '',
-        term: row[10] || '',
-        slot: row[11] || '', // Column L: Slot
-        sisa_hari: row[12] || '', // Column M: Sisa Hari
-        noted: row[13] || '',
-        wa_pelanggan: row[14] || '',
-        email: row[15] || '',
-        password: row[16] || '',
-        pin: row[17] || '',
-      });
-    }
+    const customers = result.rows.map(row => ({
+      customer_id:      row.customer_id,
+      sub_id:           row.sub_id,
+      nama:             row.nama || '',
+      wa_pelanggan:     row.wa_pelanggan || '',
+      email:            row.email || '',
+      produk:           row.produk || '',
+      subscription:     row.subscription || '',
+      start_membership: row.start_membership || '',
+      end_membership:   row.end_membership || '',
+      status_payment:   row.status_payment || '',
+      slot:             row.slot || '',
+    }));
 
     customerCache = { data: customers, lastUpdate: now };
-    console.log(`✅ Loaded ${customers.length} customer records from Sheets`);
+    console.log(`✅ Loaded ${customers.length} customer records from PostgreSQL`);
     return customers;
   } catch (error) {
     console.error('❌ Error loading customer data:', error.message);
@@ -276,35 +238,25 @@ async function loadGroupData() {
   }
 
   try {
-    const authClient = await getAuthClient();
-    const sheets = google.sheets({ version: 'v4', auth: authClient });
-    
-    const response = await sheets.spreadsheets.values.get({
-      spreadsheetId: SPREADSHEET_ID,
-      range: 'Group!A:F',
-    });
-
-    const rows = response.data.values || [];
-    if (rows.length === 0) {
-      groupCache = { data: {}, lastUpdate: now };
-      return {};
-    }
+    const result = await pgPool.query(
+      `SELECT subscription, code, email, password
+       FROM groups
+       ORDER BY subscription`
+    );
 
     const groups = {};
-    for (let i = 1; i < rows.length; i++) {
-      const row = rows[i];
-      const subscriptionName = row[1]; // Column B: Subscription name
-      if (subscriptionName) {
-        groups[subscriptionName] = {
-          code: row[2] || '', // Column C
-          email: row[3] || '', // Column D: Email
-          password: row[4] || '', // Column E: Password
+    result.rows.forEach(row => {
+      if (row.subscription) {
+        groups[row.subscription] = {
+          code:     row.code     || '',
+          email:    row.email    || '',
+          password: row.password || '',
         };
       }
-    }
+    });
 
     groupCache = { data: groups, lastUpdate: now };
-    console.log(`✅ Loaded ${Object.keys(groups).length} group accounts`);
+    console.log(`✅ Loaded ${Object.keys(groups).length} group accounts from PostgreSQL`);
     return groups;
   } catch (error) {
     console.error('❌ Error loading group data:', error.message);
@@ -763,43 +715,20 @@ async function processPaymentConfirmation(command, customers) {
       year: 'numeric' 
     });
     
-    // Update Google Sheets
-    const authClient = await getAuthClient();
-    const sheets = google.sheets({ version: 'v4', auth: authClient });
-    
-    // Use rowIndex which is actual row number in Google Sheets
-    const rowNumber = customer.rowIndex;
-    
-    console.log(`   📝 Updating Row ${rowNumber}: ${customer.subscription} - ${customer.nama}`);
-    
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: SPREADSHEET_ID,
-      range: `Customer!H${rowNumber}`, // END OF MEMBERSHIP (Column H)
-      valueInputOption: 'USER_ENTERED',
-      requestBody: {
-        values: [[sheetDateFormat]]
-      }
-    });
-    
-    // Update Status Payment to "PAID"
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: SPREADSHEET_ID,
-      range: `Customer!I${rowNumber}`, // Status payment (Column I)
-      valueInputOption: 'RAW',
-      requestBody: {
-        values: [['PAID']]
-      }
-    });
-    
-    // Update TERM (Column K)
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: SPREADSHEET_ID,
-      range: `Customer!K${rowNumber}`, // TERM (Column K)
-      valueInputOption: 'RAW',
-      requestBody: {
-        values: [[productInfo.duration]]
-      }
-    });
+    // Update PostgreSQL: end_date, status, invalidate cache
+    console.log(`   📝 Updating subscription ID ${customer.sub_id}: ${customer.produk} - ${customer.nama}`);
+
+    await pgPool.query(
+      `UPDATE customer_subscriptions
+          SET end_date = $1,
+              status   = 'PAID',
+              updated_at = NOW()
+        WHERE id = $2`,
+      [newExpDate, customer.sub_id]
+    );
+
+    // Invalidate customer cache so next request gets fresh data
+    customerCache = { data: [], lastUpdate: 0 };
     
     // Get Group account info for this subscription
     const groupInfo = groupData[customer.subscription] || {};
