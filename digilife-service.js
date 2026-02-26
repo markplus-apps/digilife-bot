@@ -1516,10 +1516,51 @@ app.post('/inbound', async (req, res) => {
     const mediaSource = imageUrl || media || null;
     let messageType = 'text'; // Default: text message
 
-    // Jika ada gambar, extract text dari gambar menggunakan GPT-4o-mini Vision
+    // PRIORITY 1: Jika ada gambar, FIRST cek apakah ini bukti transfer dengan Gemini
     if (mediaSource) {
       messageType = imageUrl ? 'image' : 'document';
       console.log(`📩 Incoming ${messageType.toUpperCase()} from ${senderName} (${senderJid})`);
+      
+      // FIRST: Check payment proof dengan Gemini sebelum text extraction
+      if (messageType === 'image') {
+        try {
+          const proofAnalysis = await analyzePaymentProof(mediaSource);
+          
+          // Check jika result adalah string (old format) atau object (new JSON format)
+          const isPaymentProof = typeof proofAnalysis === 'string' 
+            ? proofAnalysis.includes('BERHASIL') || proofAnalysis.includes('berhasil') || proofAnalysis.includes('transfer')
+            : proofAnalysis.is_payment_proof === true || proofAnalysis.is_payment_proof === 'true';
+          
+          if (isPaymentProof) {
+            console.log(`✅ Payment proof detected via Gemini Vision!`);
+            
+            // Lookup customer name dari PostgreSQL
+            const phoneNumber = (senderJid || '').split('@')[0].replace(':', '');
+            const customerDbName = getFirstName(await lookupCustomerName(phoneNumber));
+            
+            // Format proof analysis response
+            let proofDetails = typeof proofAnalysis === 'string' ? proofAnalysis : JSON.stringify(proofAnalysis, null, 2);
+            
+            const proofResponse = `Terima kasih ${customerDbName || senderName}! 🙏\n\nBukti transfer Anda sudah diterima:\n\n${proofDetails}\n\nAdmin akan segera verifikasi dan mengaktifkan langganan Anda.\nMohon tunggu konfirmasi dalam beberapa saat ya! ⏳`;
+            
+            await axios.post(BOT_API_URL, {
+              to: chatJid,
+              text: proofResponse,
+            });
+            
+            updateConversationHistory(phoneNumber, 'user', `[Sent IMAGE] ${senderName}`);
+            updateConversationHistory(phoneNumber, 'assistant', proofResponse);
+            
+            console.log(`✅ Payment proof response sent to ${chatJid}`);
+            return res.json({ success: true, message: 'Payment proof received and analyzed' });
+          }
+        } catch (e) {
+          console.warn('⚠️ Payment proof analysis failed:', e.message);
+          // Continue to text extraction if analysis fails
+        }
+      }
+      
+      // BARU: Extract text hanya jika BUKAN payment proof
       const extractedText = await extractTextFromImage(mediaSource);
       
       // Combine dengan caption jika ada
@@ -1723,61 +1764,7 @@ Setelah transfer, mohon konfirmasi ya! 🙏🏻`;
       console.log(`✅ Payment info sent to ${chatJid}`);
       return res.json({ success: true, message: 'Payment info sent' });
     }
-    
-    // Check if customer sends payment proof (image/screenshot)
-    if (messageType === 'image' || messageType === 'document') {
-      console.log(`📸 Payment proof detection: image/document received from ${phoneNumber}`);
-      
-      // Try to extract text dari bukti transfer
-      let proofInfo = '';
-      if (messageType === 'image' && mediaSource) {
-        try {
-          proofInfo = await analyzePaymentProof(mediaSource);
-        } catch (e) {
-          console.warn('⚠️ Could not analyze payment proof image:', e.message);
-          proofInfo = 'Transfer screenshot';
-        }
-      }
-      
-      const proofResponse = `Terima kasih ${customerDbName || senderName}! 🙏\n\nSaya sudah terima bukti ${proofInfo || 'transfer'} Anda. Admin akan segera verifikasi pembayaran dan mengaktifkan langganan Anda.\n\nMohon tunggu konfirmasi dari kami ya! ⏳`;
-      
-      await axios.post(BOT_API_URL, {
-        to: chatJid,
-        text: proofResponse,
-      });
-      
-      updateConversationHistory(phoneNumber, 'user', `[Sent ${messageType.toUpperCase()}] ${senderName}`);
-      updateConversationHistory(phoneNumber, 'assistant', proofResponse);
-      
-      console.log(`✅ Payment proof acknowledged for ${chatJid}`);
-      return res.json({ success: true, message: 'Payment proof received and logged' });
-    }
 
-    // Search knowledge dari Vector DB untuk RAG
-    let knowledgeContexts = await searchKnowledge(messageText, 3);
-
-    // Auto web search jika knowledge base kosong atau score rendah
-    if (knowledgeContexts.length === 0) {
-      console.log(`💡 Knowledge base empty, triggering web search...`);
-      const webResults = await webSearch(messageText, 3);
-      knowledgeContexts = webResults;
-    }
-
-    // Check product availability
-    const availability = await checkProductAvailability(groupData, pricingData, customerData);
-
-    let responseText = '';
-
-    // Handle subscription_inquiry: Tanya langganan apa saja
-    if (intent.intent === 'subscription_inquiry' && isRegisteredCustomer) {
-      console.log(`📋 Subscription inquiry detected`);
-      
-      const subscriptions = await getCustomerSubscriptions(phoneNumber);
-      
-      if (subscriptions && subscriptions.length > 0) {
-        // Format list with status dan expiry
-        let subscriptionList = `📋 *Langganan Anda:*\n\n`;
-        subscriptions.forEach(sub => {
           subscriptionList += `${sub.statusEmoji} *${sub.product}*\n`;
           subscriptionList += `   Status: ${sub.statusText}\n`;
           subscriptionList += `   Expired: ${sub.expiry}`;
