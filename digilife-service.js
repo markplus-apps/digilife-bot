@@ -1510,16 +1510,23 @@ Response harus natural, jangan robotic!`;
 // Endpoint untuk menerima pesan masuk dari bot-1
 app.post('/inbound', async (req, res) => {
   try {
-    const { senderJid, senderName, chatJid, text, imageUrl, media, isGroup } = req.body;
+    const { senderJid, senderName, chatJid, text, imageUrl, media, isGroup, image, url, image_url } = req.body;
 
     let messageText = text || '';
-    const mediaSource = imageUrl || media || null;
+    // Try multiple field names yang mungkin digunakan Fonnte
+    const mediaSource = imageUrl || media || image || url || image_url || null;
     let messageType = 'text'; // Default: text message
+
+    // DEBUG: Log full payload jika ada media
+    if (mediaSource) {
+      console.log(`📩 DEBUG: Full req.body keys:`, Object.keys(req.body));
+      console.log(`📩 DEBUG: imageUrl=${imageUrl}, media=${media}, image=${image}, url=${url}, image_url=${image_url}`);
+    }
 
     // PRIORITY 1: Jika ada gambar, FIRST cek apakah ini bukti transfer dengan Gemini
     if (mediaSource) {
-      messageType = imageUrl ? 'image' : 'document';
-      console.log(`📩 Incoming ${messageType.toUpperCase()} from ${senderName} (${senderJid})`);
+      messageType = imageUrl ? 'image' : (image || picture) ? 'image' : 'document';
+      console.log(`📩 Incoming ${messageType.toUpperCase()} from ${senderName} (${senderJid}) - URL: ${mediaSource.substring(0, 80)}...`);
       
       // FIRST: Check payment proof dengan Gemini sebelum text extraction
       if (messageType === 'image') {
