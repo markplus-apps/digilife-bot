@@ -30,7 +30,8 @@ app.post('/webhook', async (req, res) => {
     // Basic normalization for common Fonnte fields
     const sender = payload.sender || payload.from || payload.phone || null;
     const name = payload.name || payload.pushName || null;
-    const text = payload.message || payload.text || '';
+    const caption = payload.caption || payload.captionText || payload.text_caption || '';
+    let text = payload.message || payload.text || caption || '';
     const isGroup = Boolean(payload.group_id || payload.isGroup);
     const messageId = payload.id || payload.message_id || payload.messageId || null;
 
@@ -39,6 +40,12 @@ app.post('/webhook', async (req, res) => {
     }
 
     try {
+        if (text === 'non-text message' && caption) {
+            text = caption;
+        }
+
+        const mediaSource = payload.media || payload.file || payload.image || payload.url || payload.image_url || payload.imageUrl || payload.mediaUrl || payload.fileUrl || payload.link || null;
+
         const forwardPayload = {
             event: 'message',
             timestamp: payload.timestamp || Date.now(),
@@ -48,11 +55,14 @@ app.post('/webhook', async (req, res) => {
             chatJid: isGroup ? payload.group_id : sender,
             isGroup: isGroup,
             text: text || '',
+            imageUrl: payload.imageUrl || payload.image_url || payload.url || payload.mediaUrl || null,
+            media: mediaSource || null,
+            image: payload.image || null,
+            url: payload.url || null,
+            image_url: payload.image_url || null,
+            mediaUrl: payload.mediaUrl || null,
+            fileUrl: payload.fileUrl || payload.file || null,
         };
-
-        if (payload.media || payload.file || payload.image) {
-            forwardPayload.media = payload.media || payload.file || payload.image;
-        }
 
         const response = await axios.post(digiLifeServiceUrl, forwardPayload, {
             headers: { 'Content-Type': 'application/json' },
