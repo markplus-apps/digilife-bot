@@ -1581,6 +1581,7 @@ app.post('/inbound', async (req, res) => {
     // Lookup customer name dari PostgreSQL
     const phoneNumber = (senderJid || '').split('@')[0].replace(':', '');
     const customerDbName = getFirstName(await lookupCustomerName(phoneNumber));
+    let responseText = ''; // HARUS di awal sebelum ANY error bisa terjadi
 
     console.log(`📩 Incoming message from ${customerDbName || senderName} (${senderJid}): ${messageText}`);
 
@@ -1666,8 +1667,6 @@ app.post('/inbound', async (req, res) => {
     const availability = await checkProductAvailability(groupData, pricingData, customerData);
 
     const isRegisteredCustomer = isCustomer(phoneNumber, customerData);
-    
-    let responseText = ''; // Initialize responseText untuk semua conditional paths
 
     console.log(`👤 Customer check: ${phoneNumber} - ${isRegisteredCustomer ? 'Registered' : 'Not registered'}`);
 
