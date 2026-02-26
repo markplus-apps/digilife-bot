@@ -178,6 +178,43 @@ async function getCustomerSubscriptions(phoneNumber) {
   }
 }
 
+// Helper: Analyze payment proof image (detect transfer screenshot)
+async function analyzePaymentProof(imageUrl) {
+  try {
+    console.log(`🔍 Analyzing payment proof image...`);
+    
+    // Use OpenAI vision to analyze payment proof
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'image_url',
+              image_url: { url: imageUrl },
+            },
+            {
+              type: 'text',
+              text: `Analisa screenshot ini. Apakah ini bukti transfer/pembayaran bank? 
+Jika ya, ekstrak info singkat: nama bank, nominal (jika terlihat), waktu transfer.
+Jika tidak, jawab "bukan bukti pembayaran".
+Respond dalam 1 baris singkat saja dalam bahasa Indonesia.`,
+            },
+          ],
+        },
+      ],
+    });
+    
+    const analysis = response.choices[0].message.content;
+    console.log(`   Proof analysis result: ${analysis}`);
+    return analysis;
+  } catch (e) {
+    console.error('⚠️ Error analyzing payment proof:', e.message);
+    return 'bukti pembayaran';
+  }
+}
+
 // Get conversation history dari PostgreSQL
 async function getConversationHistoryPG(phoneNumber, limit = 20) {
   try {
@@ -1546,11 +1583,29 @@ app.post('/inbound', async (req, res) => {
 
     console.log(`👤 Customer check: ${phoneNumber} - ${isRegisteredCustomer ? 'Registered' : 'Not registered'}`);
 
-    // FILTER 1: Skip auto-reply untuk message yang terlalu pendek/ambiguous
+    // FILTER 1: Detect DEFER/CANCEL intent (customer says "nanti", "stop", "belum", etc)
+    const deferKeywords = ['nanti', 'stop dl', 'stop dlu', 'belum', 'blm waktunya', 'belum sekarang', 'japri lg', 'tidak usah', 'gak usah', 'skip', 'skip dl'];
+    const isDeferring = deferKeywords.some(kw => messageText.toLowerCase().includes(kw));
+    
+    if (isDeferring && isRegisteredCustomer) {
+      console.log(`⏸️  Customer deferring: "${trimmedMessage}"`);
+      const deferResponse = `Baik ${customerDbName || senderName}, saya tunggu konfirmasi Anda nanti ya! 😊\n\nHubungi saya kapan saja jika sudah siap perpanjang. ✨`;
+      
+      await axios.post(BOT_API_URL, {
+        to: chatJid,
+        text: deferResponse,
+      });
+      
+      updateConversationHistory(phoneNumber, 'user', messageText);
+      updateConversationHistory(phoneNumber, 'assistant', deferResponse);
+      return res.json({ success: true, message: 'Deferred response sent' });
+    }
+    
+    // FILTER 2: Skip auto-reply untuk message yang terlalu pendek/ambiguous (TAPI bukan defer)
     const trimmedMessage = messageText.trim();
     const shortAmbiguousKeywords = [
       'ok', 'oke', 'baik', 'siap', 'ya', 'iya', 'tidak', 'nggak', 'gak', 'ngga', 'ga',
-      'blm', 'belum', 'sdh', 'sudah', 'udah', 'mau', 'boleh', 'bisa', 'bisa'
+      'blm', 'belum', 'sdh', 'sudah', 'udah', 'mau', 'boleh', 'bisa'
     ];
     
     const isShortMessage = trimmedMessage.length < 15;
@@ -1558,11 +1613,9 @@ app.post('/inbound', async (req, res) => {
     const isOnlyNumbers = /^[\d\s.,]+$/.test(trimmedMessage); // Only digits, spaces, dots, commas
     
     if (isShortMessage && (isAmbiguous || isOnlyNumbers)) {
-      console.log(`⏭️  Skipping auto-reply: Message too short/ambiguous: "${trimmedMessage}"`);
-      
-      // Only update history, don't respond
-      updateConversationHistory(phoneNumber, 'user', messageText);
-      return res.json({ success: true, message: 'Message logged (too ambiguous, manual handling suggested)' });
+      // Jika singkat tapi bukan defer, gunakan context untuk understand usernya
+      console.log(`⏳ Short message detected, using conversation context to understand intent: "${trimmedMessage}"`);
+      // Don't skip - lanjut ke intent detection yang akan gunakan conversation history
     }
     
     // FILTER 2: Check if this is NEW SUBSCRIPTION request (not renewal)
@@ -1600,13 +1653,13 @@ Mohon tunggu sebentar ya! 🙏`;
     const intent = await extractIntent(messageText, pricingData, conversationHistory);
     console.log(`🎯 Intent detected:`, intent);
 
-    // Check if customer confirms renewal/extension
-    const confirmKeywords = ['iya perpanjang', 'mau perpanjang', 'perpanjang', 'iya lanjut', 'ok perpanjang', 'ya perpanjang', 'iya extend', 'mau bayar', 'bayar sekarang'];
+    // Check if customer EXPLICITLY confirms renewal/extension (dengan strong intent)
+    const confirmKeywords = ['iya perpanjang', 'mau perpanjang', 'perpanjang sekarang', 'iya lanjut', 'ok perpanjang', 'ya perpanjang', 'iya extend', 'mau bayar', 'bayar sekarang', 'bayarnya gimana', 'transfer kemana', 'rekening apa'];
     const messageTextLower = messageText.toLowerCase();
     const isConfirmingRenewal = confirmKeywords.some(keyword => messageTextLower.includes(keyword));
     
     if (isConfirmingRenewal && isRegisteredCustomer) {
-      console.log(`💳 Customer confirming renewal - sending payment info`);
+      console.log(`💳 Customer explicitly confirming renewal - sending payment info`);
       
       const paymentInfo = `Siap! Untuk pembayaran dapat ditransfer ke rekening:
 
@@ -1633,6 +1686,35 @@ Setelah transfer, mohon konfirmasi ya! 🙏🏻`;
       
       console.log(`✅ Payment info sent to ${chatJid}`);
       return res.json({ success: true, message: 'Payment info sent' });
+    }
+    
+    // Check if customer sends payment proof (image/screenshot)
+    if (messageType === 'image' || messageType === 'document') {
+      console.log(`📸 Payment proof detection: image/document received from ${phoneNumber}`);
+      
+      // Try to extract text dari bukti transfer
+      let proofInfo = '';
+      if (messageType === 'image' && mediaUrl) {
+        try {
+          proofInfo = await analyzePaymentProof(mediaUrl);
+        } catch (e) {
+          console.warn('⚠️ Could not analyze payment proof image:', e.message);
+          proofInfo = 'Transfer screenshot';
+        }
+      }
+      
+      const proofResponse = `Terima kasih ${customerDbName || senderName}! 🙏\n\nSaya sudah terima bukti ${proofInfo || 'transfer'} Anda. Admin akan segera verifikasi pembayaran dan mengaktifkan langganan Anda.\n\nMohon tunggu konfirmasi dari kami ya! ⏳`;
+      
+      await axios.post(BOT_API_URL, {
+        to: chatJid,
+        text: proofResponse,
+      });
+      
+      updateConversationHistory(phoneNumber, 'user', `[Sent ${messageType.toUpperCase()}] ${senderName}`);
+      updateConversationHistory(phoneNumber, 'assistant', proofResponse);
+      
+      console.log(`✅ Payment proof acknowledged for ${chatJid}`);
+      return res.json({ success: true, message: 'Payment proof received and logged' });
     }
 
     // Search knowledge dari Vector DB untuk RAG
