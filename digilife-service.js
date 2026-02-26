@@ -1663,6 +1663,8 @@ app.post('/inbound', async (req, res) => {
       loadGroupData(),
     ]);
 
+    const availability = await checkProductAvailability(groupData, pricingData, customerData);
+
     const isRegisteredCustomer = isCustomer(phoneNumber, customerData);
 
     console.log(`👤 Customer check: ${phoneNumber} - ${isRegisteredCustomer ? 'Registered' : 'Not registered'}`);
