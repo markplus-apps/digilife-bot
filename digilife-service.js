@@ -1480,10 +1480,12 @@ app.post('/inbound', async (req, res) => {
 
     let messageText = text || '';
     const mediaSource = imageUrl || media || null;
+    let messageType = 'text'; // Default: text message
 
     // Jika ada gambar, extract text dari gambar menggunakan GPT-4o-mini Vision
     if (mediaSource) {
-      console.log(`📩 Incoming IMAGE from ${senderName} (${senderJid})`);
+      messageType = imageUrl ? 'image' : 'document';
+      console.log(`📩 Incoming ${messageType.toUpperCase()} from ${senderName} (${senderJid})`);
       const extractedText = await extractTextFromImage(mediaSource);
       
       // Combine dengan caption jika ada
