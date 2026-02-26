@@ -1736,6 +1736,9 @@ Mohon tunggu sebentar ya! 🙏`;
       console.log(`💬 Conversation history: ${conversationHistory.length} messages (PostgreSQL)`);
     }
 
+    // Load knowledge contexts from Qdrant
+    const knowledgeContexts = await searchKnowledge(messageText);
+
     // Extract intent — pass history supaya pesan pendek/ambigu bisa menggunakan konteks
     const intent = await extractIntent(messageText, pricingData, conversationHistory);
     console.log(`🎯 Intent detected:`, intent);
