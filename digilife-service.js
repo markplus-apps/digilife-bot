@@ -288,6 +288,126 @@ async function saveConversationPG(phoneNumber, message, response) {
   }
 }
 
+// ====== SMART RESPONSE FILTERS (Anti-Annoying Bot) ======
+
+// 1. Detect apakah message terlalu pendek dan tidak perlu response
+function shouldSkipShortMessage(messageText, conversationHistory = []) {
+  const msg = messageText.toLowerCase().trim();
+  const msgLength = messageText.trim().length;
+  
+  // Support keywords yang HARUS dijawab meskipun pendek
+  const supportKeywords = ['otp', 'error', 'problem', 'gagal', 'tidak bisa', 'masalah', 'bantuan', 'gimana', 'apa', 'caranya', 'bagaimana'];
+  const hasSupport = supportKeywords.some(kw => msg.includes(kw));
+  
+  // Jika < 5 karakter dan TIDAK ada support keywords → SKIP
+  if (msgLength < 5 && !hasSupport) {
+    console.log(`⏸️  SKIP: Short message <5 chars without support context: "${messageText}"`);
+    return true;
+  }
+  
+  // Jika hanya short acknowledgment ("ok", "oke", "tq", "mantap", "5", "baik") → SKIP
+  const silenceKeywords = ['ok', 'oke', 'tq', 'ok', 'ty', 'tyy', 'mantap', 'baik', 'siap', 'iya', 'yyy', 'yy', 'ya'];
+  const isAcknowledgment = silenceKeywords.includes(msg);
+  const isOnlyNumbers = /^[\d\s.,]+$/.test(messageText);
+  
+  if ((isAcknowledgment || isOnlyNumbers) && msgLength < 10) {
+    console.log(`⏸️  SKIP: Acknowledgment-only message: "${messageText}"`);
+    return true;
+  }
+  
+  return false;
+}
+
+// 2. Detect apakah bot sudah tanya clarification di messages terakhir
+function detectPreviousClarification(conversationHistory = []) {
+  if (!conversationHistory || conversationHistory.length < 2) return false;
+  
+  // Ambil 2 message terakhir (bot responses) 
+  const recentBotMessages = conversationHistory
+    .filter(m => m.role === 'assistant')
+    .slice(-2)
+    .map(m => m.content.toLowerCase());
+  
+  // Cek apakah bot sudah tanya apa/gimana/jelaskan di recent messages
+  const clarificationPatterns = [
+    'bisa dijelaskan', 'jelaskan', 'apakah ini tentang', 'yang mana', 'produk apa',
+    'tanya tentang', 'maksudnya', 'sebenernya tentang apa', 'mau tanya tentang'
+  ];
+  
+  const alreadyAsked = recentBotMessages.some(msg =>
+    clarificationPatterns.some(pattern => msg.includes(pattern))
+  );
+  
+  if (alreadyAsked) {
+    console.log(`⚠️  WARNING: Already asked clarification in recent messages`);
+    return true;
+  }
+  
+  return false;
+}
+
+// 3. Detect excessive back-and-forth (3+ user messages <10chars in a row)
+function detectConversationMomentum(conversationHistory = []) {
+  if (!conversationHistory || conversationHistory.length < 6) return false;
+  
+  // Ambil last 3 user messages
+  const recentUserMsgs = conversationHistory
+    .filter(m => m.role === 'user')
+    .slice(-3)
+    .map(m => m.content.trim());
+  
+  if (recentUserMsgs.length < 3) return false;
+  
+  // Jika 3 pesan terakhir semuanya <10 chars → conversation momentum terganggu
+  const allShort = recentUserMsgs.every(m => m.length < 10);
+  
+  if (allShort) {
+    console.log(`⏳ MOMENTUM: 3 short messages in a row - user might be distracted`);
+    return true;
+  }
+  
+  return false;
+}
+
+// 4. Check product confidence dari conversation history
+function calculateProductConfidence(messageText, conversationHistory = []) {
+  const msg = messageText.toLowerCase();
+  let confidence = 0;
+  
+  // 1. Product mentioned in CURRENT message (+40)
+  const productKeywords = ['netflix', 'spotify', 'youtube', 'hbo', 'prime', 'disney', 'microsoft', 'canva', 'vpn', 'apple'];
+  const mentionedInMsg = productKeywords.filter(p => msg.includes(p));
+  if (mentionedInMsg.length > 0) {
+    confidence += 40;
+    console.log(`   ✓ Product in message: +40`);
+  }
+  
+  // 2. Product mentioned in HISTORY (+30)
+  if (conversationHistory && conversationHistory.length > 0) {
+    const historyMsg = conversationHistory.map(m => m.content).join(' ').toLowerCase();
+    const mentionedInHistory = productKeywords.filter(p => historyMsg.includes(p));
+    if (mentionedInHistory.length > 0) {
+      confidence += 30;
+      console.log(`   ✓ Product in history: +30`);
+    }
+  }
+  
+  // 3. Support/Renewal keywords (+20)
+  const contextKeywords = ['error', 'problem', 'tidak bisa', 'gimana', 'caranya', 'perpanjang', 'bayar', 'harga'];
+  if (contextKeywords.some(kw => msg.includes(kw))) {
+    confidence += 20;
+    console.log(`   ✓ Context keywords: +20`);
+  }
+  
+  // 4. Explicit intent in message (+10)
+  if (msg.length > 20) {
+    confidence += 10;
+    console.log(`   ✓ Longer message: +10`);
+  }
+  
+  return Math.min(confidence, 100);
+}
+
 // Fungsi untuk OCR gambar menggunakan GPT-4o-mini Vision
 async function extractTextFromImage(imageUrl) {
   try {
@@ -1150,8 +1270,9 @@ function detectProductFromMessage(message, availabilityMap) {
   return null;
 }
 
-async function extractIntent(userMessage, pricingData, conversationHistory = []) {
+async function extractIntent(userMessage, pricingData, conversationHistory = [], contextData = {}) {
   const productList = [...new Set(pricingData.map(p => p.product))].join(', ');
+  const { confidence = 50, alreadyAskedClarification = false, badMomentum = false } = contextData;
 
   // Build history context string (last 4 messages) supaya pesan pendek bisa dipahami dalam konteks
   let historyContext = '';
@@ -1161,13 +1282,32 @@ async function extractIntent(userMessage, pricingData, conversationHistory = [])
       recent.map(m => `${m.role === 'user' ? 'Customer' : 'Bot'}: ${m.content.substring(0, 150)}`).join('\n');
   }
   
+  // SMART CLARIFICATION LOGIC:
+  // - Jika confidence >= 80% → assume dan langsung jawab (jangan tanya)
+  // - Jika confidence 60-79% → acknowledge assumption tapi tetap jawab (jangan tanya)
+  // - Jika confidence < 60% DAN belum pernah tanya → ask clarification
+  // - Jika confidence < 60% TAPI sudah pernah tanya → just answer with assumption
+  let clarificationGuidance = '';
+  
+  if (confidence >= 80) {
+    clarificationGuidance = `\n\nNOTA: Confidence score TINGGI (${confidence}%). LANGSUNG JAWAB tanpa perlu tanya ulang!`;
+  } else if (confidence >= 60 && confidence < 80) {
+    clarificationGuidance = `\n\nNOTA: Confidence score MEDIUM (${confidence}%). Acknowledge assumption tapi LANGSUNG JAWAB, jangan tanya ulang!`;
+  } else if (alreadyAskedClarification) {
+    clarificationGuidance = `\n\nNOTA: Bot sudah tanya clarification sebelumnya. LANGSUNG JAWAB dengan asumsi dari history, jangan tanya lagi!`;
+  } else if (badMomentum) {
+    clarificationGuidance = `\n\nNOTA: Momentum conversasi terganggu (3+ short messages). Keep response minimal, jangan tanya clarification!`;
+  }
+
   const prompt = `Analisa pertanyaan customer service ini dan kategorisasi:
 
-Produk tersedia: ${productList}${historyContext}
+Produk tersedia: ${productList}${historyContext}${clarificationGuidance}
 
 Pesan terbaru customer: "${userMessage}"
 
 PERHATIAN: Gunakan history di atas sebagai konteks. Contoh: jika history bicara soal YouTube Premium dan pesan baru adalah "bayarnya gimana?" atau "transfer kemana?", itu adalah intent "renewal" dengan product "YouTube Premium".
+
+JANGAN PERNAH TANYA PRODUK ULANG jika sudah disebutkan di history atau confidence score tinggi. Lebih baik jawab dengan assumption.
 
 Kategori intent:
 1. **troubleshooting** - Masalah OTP, password, login, akun error → {"intent": "support"}
@@ -1691,22 +1831,39 @@ app.post('/inbound', async (req, res) => {
       updateConversationHistory(phoneNumber, 'assistant', deferResponse);
       return res.json({ success: true, message: 'Deferred response sent' });
     }
-    
-    // FILTER 2: Skip auto-reply untuk message yang terlalu pendek/ambiguous (TAPI bukan defer)
-    const shortAmbiguousKeywords = [
-      'ok', 'oke', 'baik', 'siap', 'ya', 'iya', 'tidak', 'nggak', 'gak', 'ngga', 'ga',
-      'blm', 'belum', 'sdh', 'sudah', 'udah', 'mau', 'boleh', 'bisa'
-    ];
-    
-    const isShortMessage = trimmedMessage.length < 15;
-    const isAmbiguous = shortAmbiguousKeywords.some(kw => trimmedMessage.toLowerCase() === kw);
-    const isOnlyNumbers = /^[\d\s.,]+$/.test(trimmedMessage); // Only digits, spaces, dots, commas
-    
-    if (isShortMessage && (isAmbiguous || isOnlyNumbers)) {
-      // Jika singkat seperti "Iyaaa" atau "55" setelah renewal reminder, gunakan context
-      console.log(`⏳ Short/ambiguous message detected, using conversation context: "${trimmedMessage}"`);
-      // Don't skip - lanjut ke intent detection yang akan gunakan conversation history untuk understand
+
+    // Get conversation history dari PostgreSQL (persistent) BEFORE any checks
+    // Sehingga semua filter bisa gunakan historical context
+    const conversationHistory = await getConversationHistoryPG(phoneNumber);
+    if (conversationHistory.length > 0) {
+      console.log(`💬 Conversation history: ${conversationHistory.length} messages (PostgreSQL)`);
     }
+    
+    // NEW FILTER: SMART SILENCE - Jangan respond untuk message yang terlalu pendek tanpa konteks
+    // TAPI masih simpan di history (jangan kecewakan pelanggan dengan blank response)
+    if (shouldSkipShortMessage(trimmedMessage, conversationHistory)) {
+      console.log(`⏸️  Smart silence activated - message too short and no support context`);
+      // ONLY save to history, don't send response
+      updateConversationHistory(phoneNumber, 'user', messageText);
+      return res.json({ success: true, message: 'Message saved but not responded (smart silence)' });
+    }
+
+    // Check apakah bot sudah tanya clarification di messages terakhir
+    if (detectPreviousClarification(conversationHistory)) {
+      console.log(`⚠️  WARNING: Detected previous clarification - won't ask again`);
+      // This will be used in intent extraction to prevent repeat clarification
+    }
+
+    // Check conversation momentum (excessive back-and-forth)
+    const badMomentum = detectConversationMomentum(conversationHistory);
+    if (badMomentum) {
+      console.log(`⏳ Conversation momentum disrupted - recommend minimal response`);
+      // This will be used to decide response length
+    }
+
+    // Calculate product confidence untuk smart clarification
+    const productConfidence = calculateProductConfidence(trimmedMessage, conversationHistory);
+    console.log(`📊 Product confidence score: ${productConfidence}%`);
     
     // FILTER 2: Check if this is NEW SUBSCRIPTION request (not renewal)
     const newSubsKeywords = ['langganan baru', 'akun baru', 'daftar baru', 'bikin baru', 'buat baru', 'mau langganan'];
@@ -1734,10 +1891,8 @@ Mohon tunggu sebentar ya! 🙏`;
     }
 
     // Get conversation history dari PostgreSQL (persistent) — load DULU sebelum extractIntent
-    const conversationHistory = await getConversationHistoryPG(phoneNumber);
-    if (conversationHistory.length > 0) {
-      console.log(`💬 Conversation history: ${conversationHistory.length} messages (PostgreSQL)`);
-    }
+    // Already loaded above at line ~1825 - REMOVED DUPLICATE
+    // const conversationHistory = await getConversationHistoryPG(phoneNumber); <-- REMOVED
 
     // Load knowledge contexts from Qdrant (with fallback to empty array)
     let knowledgeContexts = [];
@@ -1749,7 +1904,12 @@ Mohon tunggu sebentar ya! 🙏`;
     }
 
     // Extract intent — pass history supaya pesan pendek/ambigu bisa menggunakan konteks
-    const intent = await extractIntent(messageText, pricingData, conversationHistory);
+    // IMPROVED: Pass confidence score untuk smart clarification (prevent over-asking)
+    const intent = await extractIntent(messageText, pricingData, conversationHistory, {
+      confidence: productConfidence,
+      alreadyAskedClarification: detectPreviousClarification(conversationHistory),
+      badMomentum: badMomentum
+    });
     console.log(`🎯 Intent detected:`, intent);
 
     // Check if customer EXPLICITLY confirms renewal/extension (dengan strong intent)
