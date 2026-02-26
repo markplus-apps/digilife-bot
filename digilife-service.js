@@ -1602,7 +1602,7 @@ app.post('/inbound', async (req, res) => {
         // Load customer data untuk get nama
         const customerData = await loadCustomerData();
         
-        let responseText = '';
+        // Reuse outer responseText declaration (no let here)
         
         if (overrideCmd.action === 'disable') {
           const result = await disableNumber(overrideCmd.phone, customerData);
@@ -1736,8 +1736,14 @@ Mohon tunggu sebentar ya! 🙏`;
       console.log(`💬 Conversation history: ${conversationHistory.length} messages (PostgreSQL)`);
     }
 
-    // Load knowledge contexts from Qdrant
-    const knowledgeContexts = await searchKnowledge(messageText);
+    // Load knowledge contexts from Qdrant (with fallback to empty array)
+    let knowledgeContexts = [];
+    try {
+      knowledgeContexts = await searchKnowledge(messageText) || [];
+    } catch (err) {
+      console.warn(`⚠️ Failed to load knowledge contexts: ${err.message}`);
+      knowledgeContexts = [];
+    }
 
     // Extract intent — pass history supaya pesan pendek/ambigu bisa menggunakan konteks
     const intent = await extractIntent(messageText, pricingData, conversationHistory);
