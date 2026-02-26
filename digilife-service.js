@@ -1696,9 +1696,9 @@ Setelah transfer, mohon konfirmasi ya! 🙏🏻`;
       
       // Try to extract text dari bukti transfer
       let proofInfo = '';
-      if (messageType === 'image' && mediaUrl) {
+      if (messageType === 'image' && mediaSource) {
         try {
-          proofInfo = await analyzePaymentProof(mediaUrl);
+          proofInfo = await analyzePaymentProof(mediaSource);
         } catch (e) {
           console.warn('⚠️ Could not analyze payment proof image:', e.message);
           proofInfo = 'Transfer screenshot';
