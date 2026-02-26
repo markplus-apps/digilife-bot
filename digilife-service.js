@@ -1890,8 +1890,16 @@ Setelah transfer, mohon konfirmasi ya! 🙏🏻`;
         responseText = `❌ Maaf, *${displayName}* saat ini *penuh/tidak tersedia* 🙏\n\nTunggu slot terbuka atau tanya admin untuk alternatif ya!`;
       }
     } else {
-      // No product detected - use LLM for general response
-      responseText = await generateResponse(messageText, null, customerDbName || senderName, knowledgeContexts, conversationHistory);
+      // No product detected
+      
+      // For non-registered customers: keep response minimal & short to avoid unnecessary engagement
+      if (!isRegisteredCustomer) {
+        console.log(`📭 Non-registered customer, keeping response minimal`);
+        responseText = `Terima kasih sudah menghubungi! 👋\n\nJika kamu ingin berlangganan produk digital seperti Netflix, YouTube Premium, atau lainnya, silakan hubungi admin kami ya! ☺️`;
+      } else {
+        // For registered customers: use full LLM response with knowledge base
+        responseText = await generateResponse(messageText, null, customerDbName || senderName, knowledgeContexts, conversationHistory);
+      }
     }
 
     // Save conversation ke PostgreSQL (persistent)
