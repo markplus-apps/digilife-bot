@@ -1772,6 +1772,15 @@ Setelah transfer, mohon konfirmasi ya! 🙏🏻`;
       return res.json({ success: true, message: 'Payment info sent' });
     }
 
+    // Handle subscription_inquiry
+    if (intent.intent === 'subscription_inquiry' && isRegisteredCustomer) {
+      console.log(`📋 Subscription inquiry detected`);
+      
+      const subscriptions = await getCustomerSubscriptions(phoneNumber);
+      
+      if (subscriptions && subscriptions.length > 0) {
+        let subscriptionList = `📋 *Langganan Anda:*\n\n`;
+        subscriptions.forEach(sub => {
           subscriptionList += `${sub.statusEmoji} *${sub.product}*\n`;
           subscriptionList += `   Status: ${sub.statusText}\n`;
           subscriptionList += `   Expired: ${sub.expiry}`;
