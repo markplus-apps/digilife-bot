@@ -1517,10 +1517,12 @@ app.post('/inbound', async (req, res) => {
     const mediaSource = imageUrl || media || image || url || image_url || null;
     let messageType = 'text'; // Default: text message
 
-    // DEBUG: Log full payload jika ada media
-    if (mediaSource) {
+    // DEBUG: ALWAYS log jika text adalah "non-text message" = gambar dikirim
+    if (messageText === 'non-text message' || messageText === 'image' || mediaSource) {
       console.log(`📩 DEBUG: Full req.body keys:`, Object.keys(req.body));
-      console.log(`📩 DEBUG: imageUrl=${imageUrl}, media=${media}, image=${image}, url=${url}, image_url=${image_url}`);
+      console.log(`📩 DEBUG: text="${text}"`);
+      console.log(`📩 DEBUG: imageUrl="${imageUrl}", media="${media}", image="${image}", url="${url}", image_url="${image_url}"`);
+      console.log(`📩 DEBUG: All fields:`, JSON.stringify(req.body, null, 2).substring(0, 500));
     }
 
     // PRIORITY 1: Jika ada gambar, FIRST cek apakah ini bukti transfer dengan Gemini
