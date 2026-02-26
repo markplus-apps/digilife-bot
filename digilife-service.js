@@ -1895,7 +1895,7 @@ Setelah transfer, mohon konfirmasi ya! 🙏🏻`;
       // For non-registered customers: keep response minimal & short to avoid unnecessary engagement
       if (!isRegisteredCustomer) {
         console.log(`📭 Non-registered customer, keeping response minimal`);
-        responseText = `Terima kasih sudah menghubungi! 👋\n\nJika kamu ingin berlangganan produk digital seperti Netflix, YouTube Premium, atau lainnya, silakan hubungi admin kami ya! ☺️`;
+        responseText = `Terima kasih sudah menghubungi! 👋`;
       } else {
         // For registered customers: use full LLM response with knowledge base
         responseText = await generateResponse(messageText, null, customerDbName || senderName, knowledgeContexts, conversationHistory);
