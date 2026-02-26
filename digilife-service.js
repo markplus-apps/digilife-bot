@@ -1666,6 +1666,8 @@ app.post('/inbound', async (req, res) => {
     const availability = await checkProductAvailability(groupData, pricingData, customerData);
 
     const isRegisteredCustomer = isCustomer(phoneNumber, customerData);
+    
+    let responseText = ''; // Initialize responseText untuk semua conditional paths
 
     console.log(`👤 Customer check: ${phoneNumber} - ${isRegisteredCustomer ? 'Registered' : 'Not registered'}`);
 
