@@ -8,6 +8,7 @@ const OpenAI = require('openai');
 const NodeCache = require('node-cache');
 const { QdrantClient } = require('@qdrant/js-client-rest');
 const { Pool } = require('pg');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 require('dotenv').config();
 
 const app = express();
@@ -23,6 +24,20 @@ const ADMIN_NUMBERS = (process.env.ADMIN_NUMBERS || '628128933008').split(',').m
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
+
+// Google Gemini Setup untuk Vision OCR
+const geminiApiKey = process.env.GOOGLE_GEMINI_API_KEY;
+let gemini = null;
+if (geminiApiKey) {
+  try {
+    const googleAI = new GoogleGenerativeAI(geminiApiKey);
+    gemini = googleAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+    console.log('✅ Google Gemini initialized for Vision OCR');
+  } catch (error) {
+    console.error('⚠️ Gemini initialization error:', error.message);
+    gemini = null;
+  }
+}
 
 // Qdrant Setup untuk Vector DB
 const QDRANT_URL = process.env.QDRANT_URL || 'http://localhost:6333';
@@ -181,33 +196,52 @@ async function getCustomerSubscriptions(phoneNumber) {
 // Helper: Analyze payment proof image (detect transfer screenshot)
 async function analyzePaymentProof(imageUrl) {
   try {
-    console.log(`🔍 Analyzing payment proof image...`);
+    console.log(`🔍 Analyzing payment proof with Gemini Vision...`);
     
-    // Use OpenAI vision to analyze payment proof
-    const response = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: [
+    if (!gemini) {
+      console.log('   ⚠️ Gemini not available, using fallback');
+      return 'bukti pembayaran';
+    }
+    
+    // Download image dan convert ke base64
+    let imageData;
+    try {
+      const response = await axios.get(imageUrl, { responseType: 'arraybuffer' });
+      imageData = Buffer.from(response.data).toString('base64');
+    } catch (downloadError) {
+      console.warn('⚠️ Could not download image from URL, using direct URL:', downloadError.message);
+      // Fallback: use URL directly with Gemini
+      const result = await gemini.generateContent([
         {
-          role: 'user',
-          content: [
-            {
-              type: 'image_url',
-              image_url: { url: imageUrl },
-            },
-            {
-              type: 'text',
-              text: `Analisa screenshot ini. Apakah ini bukti transfer/pembayaran bank? 
-Jika ya, ekstrak info singkat: nama bank, nominal (jika terlihat), waktu transfer.
-Jika tidak, jawab "bukan bukti pembayaran".
-Respond dalam 1 baris singkat saja dalam bahasa Indonesia.`,
-            },
-          ],
-        },
-      ],
-    });
+          text: `Analisa screenshot ini dengan DETAIL. Apakah ini bukti transfer/pembayaran bank?
+Jika YA, ekstrak SEMUA info: nama bank, nominal/amount, nomor rekening tujuan, nama penerima, waktu transfer, kode/referensi transfer, dan PRODUK YANG DIBELI (jika terlihat: Netflix, Spotify, YouTube, dll).
+Jika TIDAK, jawab "bukan bukti pembayaran".
+Format response sebagai JSON dengan key: is_payment_proof, bank_name, amount, account_number, recipient_name, transaction_time, product, status.`,
+          inlineData: {
+            mimeType: 'image/jpeg',
+            data: imageData || ''
+          }
+        }
+      ]);
+      return result.response.text();
+    }
     
-    const analysis = response.choices[0].message.content;
-    console.log(`   Proof analysis result: ${analysis}`);
+    // Use Gemini Vision untuk analyze image
+    const result = await gemini.generateContent([
+      {
+        text: `Analisa screenshot ini dengan DETAIL. Apakah ini bukti transfer/pembayaran bank?
+Jika YA, ekstrak SEMUA info: nama bank, nominal/amount, nomor rekening tujuan, nama penerima, waktu transfer, kode/referensi transfer, dan PRODUK YANG DIBELI (jika terlihat: Netflix, Spotify, YouTube, Amazon Prime, Disney, etc).
+Jika TIDAK, jawab "bukan bukti pembayaran".
+Format response sebagai JSON dengan key: is_payment_proof, bank_name, amount, account_number, recipient_name, transaction_time, product, status.`,
+        inlineData: {
+          mimeType: 'image/jpeg',
+          data: imageData
+        }
+      }
+    ]);
+    
+    const analysis = result.response.text();
+    console.log(`   ✅ Proof analysis: ${analysis.substring(0, 100)}...`);
     return analysis;
   } catch (e) {
     console.error('⚠️ Error analyzing payment proof:', e.message);
