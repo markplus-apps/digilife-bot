@@ -1672,8 +1672,10 @@ app.post('/inbound', async (req, res) => {
 
     console.log(`👤 Customer check: ${phoneNumber} - ${isRegisteredCustomer ? 'Registered' : 'Not registered'}`);
 
-    // FILTER 1: Detect DEFER/CANCEL intent (customer says "nanti", "stop", "belum", etc)
-    const deferKeywords = ['nanti', 'stop dl', 'stop dlu', 'belum', 'blm waktunya', 'belum sekarang', 'japri lg', 'tidak usah', 'gak usah', 'skip', 'skip dl'];
+    const trimmedMessage = messageText.trim();
+
+    // FILTER 1: Detect DEFER/CANCEL intent (customer says "nanti", "stop", "belum", etc) - CHECK FIRST!
+    const deferKeywords = ['nanti', 'stop dl', 'stop dlu', 'belum', 'blm waktunya', 'belum sekarang', 'japri lg', 'jangan sekarang', 'tidak usah', 'gak usah', 'skip', 'skip dl'];
     const isDeferring = deferKeywords.some(kw => messageText.toLowerCase().includes(kw));
     
     if (isDeferring && isRegisteredCustomer) {
@@ -1691,7 +1693,6 @@ app.post('/inbound', async (req, res) => {
     }
     
     // FILTER 2: Skip auto-reply untuk message yang terlalu pendek/ambiguous (TAPI bukan defer)
-    const trimmedMessage = messageText.trim();
     const shortAmbiguousKeywords = [
       'ok', 'oke', 'baik', 'siap', 'ya', 'iya', 'tidak', 'nggak', 'gak', 'ngga', 'ga',
       'blm', 'belum', 'sdh', 'sudah', 'udah', 'mau', 'boleh', 'bisa'
@@ -1702,9 +1703,9 @@ app.post('/inbound', async (req, res) => {
     const isOnlyNumbers = /^[\d\s.,]+$/.test(trimmedMessage); // Only digits, spaces, dots, commas
     
     if (isShortMessage && (isAmbiguous || isOnlyNumbers)) {
-      // Jika singkat tapi bukan defer, gunakan context untuk understand usernya
-      console.log(`⏳ Short message detected, using conversation context to understand intent: "${trimmedMessage}"`);
-      // Don't skip - lanjut ke intent detection yang akan gunakan conversation history
+      // Jika singkat seperti "Iyaaa" atau "55" setelah renewal reminder, gunakan context
+      console.log(`⏳ Short/ambiguous message detected, using conversation context: "${trimmedMessage}"`);
+      // Don't skip - lanjut ke intent detection yang akan gunakan conversation history untuk understand
     }
     
     // FILTER 2: Check if this is NEW SUBSCRIPTION request (not renewal)
@@ -1756,7 +1757,7 @@ Mohon tunggu sebentar ya! 🙏`;
     const messageTextLower = messageText.toLowerCase();
     const isConfirmingRenewal = confirmKeywords.some(keyword => messageTextLower.includes(keyword));
     
-    if (isConfirmingRenewal && isRegisteredCustomer) {
+    if (isConfirmingRenewal && isRegisteredCustomer && !isDeferring) {
       console.log(`💳 Customer explicitly confirming renewal - sending payment info`);
       
       const paymentInfo = `Siap! Untuk pembayaran dapat ditransfer ke rekening:
@@ -1857,13 +1858,22 @@ Setelah transfer, mohon konfirmasi ya! 🙏🏻`;
       responseText = renewalReminder ? renewalReminder + priceResponse : priceResponse;
     }
 
+    // Check untuk technical support requests (OTP, verifikasi, error login, dll)
+    const supportKeywords = ['otp', 'verif', 'verifikasi', 'kode', 'login error', 'password', 'lupa', 'reset', 'error', 'gagal', 'tidak bisa', 'masalah', 'kendala', 'sudah terkirim', 'sudah terima'];
+    const isNeedingSupport = supportKeywords.some(kw => messageText.toLowerCase().includes(kw));
+
     // Availability check: hanya untuk pesan yang bukan price_inquiry/subscription_inquiry DAN hanya untuk registered customer
-    const detectedProducts = (intent.intent !== 'price_inquiry' && intent.intent !== 'subscription_inquiry' && isRegisteredCustomer)
+    // SKIP availability check untuk support requests - langsung ke LLM
+    const detectedProducts = (intent.intent !== 'price_inquiry' && intent.intent !== 'subscription_inquiry' && isRegisteredCustomer && !isNeedingSupport)
       ? detectProductFromMessage(messageText, availability)
       : null;
 
     if (responseText) {
-      // sudah di-handle di atas (price_inquiry)
+      // sudah di-handle di atas (price_inquiry/subscription_inquiry)
+    } else if (isNeedingSupport && !responseText) {
+      // Technical support request → use LLM dengan knowledge base
+      console.log(`🆘 Technical support request detected`);
+      responseText = await generateResponse(messageText, null, customerDbName || senderName, knowledgeContexts, conversationHistory);
     } else if (detectedProducts) {
       const productList = Array.isArray(detectedProducts) ? detectedProducts : [detectedProducts];
 
