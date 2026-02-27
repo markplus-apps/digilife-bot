@@ -2293,21 +2293,12 @@ app.post('/admin/ingest-knowledge', async (req, res) => {
 // Receives messages from GOWA when WHATSAPP_PROVIDER=gowa
 // ============================================================
 
-// Per-sender pending queue:
-// GOWA sends 2 webhooks per image — 1st has caption but no image, 2nd has image.
-// Strategy: hold any text-only message per sender for 4s; if an image from same
-// sender arrives within that window, cancel the text-only and process image instead.
-const gowaPendingSenders = new Map(); // senderJid → { timerId, resolve }
-
-function cancelPendingTextForSender(senderJid) {
-  if (gowaPendingSenders.has(senderJid)) {
-    const { timerId, resolve } = gowaPendingSenders.get(senderJid);
-    clearTimeout(timerId);
-    resolve('cancelled');
-    gowaPendingSenders.delete(senderJid);
-    console.log(`⏭️  GOWA: cancelled pending text-only for ${senderJid} (image arrived)`);
-  }
-}
+// GOWA sends 2 webhooks per image message:
+//   1st: has image (arrives first)
+//   2nd: has caption/text only (arrives ~1-2s later, same message context)
+// Strategy: when image webhook is processed, mark the sender for 8s.
+// If a text-only webhook arrives from same sender within that window → skip it.
+const gowaRecentImageSenders = new Map(); // senderJid → timestamp
 
 app.post('/api/webhook/gowa', async (req, res) => {
   try {
@@ -2330,17 +2321,6 @@ app.post('/api/webhook/gowa', async (req, res) => {
       return res.json({ success: true, message: 'Own message ignored' });
     }
 
-    // -----------------------------------------------
-    // GOWA v8.3.0 actual payload fields:
-    //   payload.from         → sender JID
-    //   payload.chat_id      → chat JID (group or individual)
-    //   payload.from_name    → sender display name
-    //   payload.text         → text message content
-    //   payload.image        → relative path e.g. "statics/media/xxx.jpg"
-    //   payload.video        → relative path for video
-    //   payload.audio        → relative path for audio
-    //   payload.caption      → caption of image/video (if any)
-    // -----------------------------------------------
     const gowaBaseUrl = process.env.GOWA_API_URL || 'http://localhost:3006';
     const senderJid = payload.from;
 
@@ -2354,21 +2334,20 @@ app.post('/api/webhook/gowa', async (req, res) => {
       mediaUrl = `${gowaBaseUrl}/${payload.audio}`;
     }
 
-    if (mediaUrl) {
-      // IMAGE webhook arrived — cancel any pending text-only from same sender
-      cancelPendingTextForSender(senderJid);
-    } else {
-      // TEXT-ONLY webhook — hold it 4s; if image arrives from same sender, this gets cancelled
-      const waited = await new Promise(resolve => {
-        const timerId = setTimeout(() => {
-          gowaPendingSenders.delete(senderJid);
-          resolve('proceed');
-        }, 4000);
-        gowaPendingSenders.set(senderJid, { timerId, resolve });
-      });
+    // Clean expired entries (older than 8s)
+    const nowMs = Date.now();
+    for (const [jid, ts] of gowaRecentImageSenders.entries()) {
+      if (nowMs - ts > 8000) gowaRecentImageSenders.delete(jid);
+    }
 
-      if (waited === 'cancelled') {
-        return res.json({ success: true, message: 'Text-only superseded by image webhook' });
+    if (mediaUrl) {
+      // IMAGE webhook → mark this sender so duplicate text-only webhook gets skipped
+      gowaRecentImageSenders.set(senderJid, Date.now());
+    } else {
+      // TEXT-ONLY webhook → skip if sender recently sent an image webhook
+      if (gowaRecentImageSenders.has(senderJid)) {
+        console.log(`⏭️  GOWA: skipped text-only duplicate for ${senderJid} (image already processed)`);
+        return res.json({ success: true, message: 'Text-only duplicate skipped (image already processed)' });
       }
     }
 
