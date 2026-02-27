@@ -2359,7 +2359,7 @@ app.post('/api/webhook/gowa', async (req, res) => {
       // This webhook has NO media (text-only or caption-only)
       // GOWA often sends this BEFORE the image webhook — delay to let image webhook arrive first
       if (messageId) {
-        await new Promise(r => setTimeout(r, 1500));
+        await new Promise(r => setTimeout(r, 3000));
         if (gowaProcessedIds.has(messageId)) {
           console.log(`⏭️  GOWA webhook skipped (superseded by image webhook): ${messageId}`);
           return res.json({ success: true, message: 'Superseded by image webhook' });
