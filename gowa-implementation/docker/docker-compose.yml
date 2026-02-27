@@ -12,7 +12,7 @@ services:
     container_name: digilife-gowa
     restart: unless-stopped
     ports:
-      - "3001:3000"  # Expose GOWA API on port 3001 of the VPS
+      - "3006:3000"  # Expose GOWA API on port 3006 of the VPS (3001 dipakai markplus-meet)
     volumes:
       - gowa_storage:/app/storages
     extra_hosts:

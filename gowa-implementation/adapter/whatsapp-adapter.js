@@ -24,7 +24,7 @@ const CONFIG = {
   
   // GOWA Configuration
   gowa: {
-    baseUrl: process.env.GOWA_API_URL || 'http://localhost:3001/api',
+    baseUrl: process.env.GOWA_API_URL || 'http://localhost:3006/api',
     sessionId: process.env.GOWA_SESSION_ID || 'default',
     basicAuth: process.env.GOWA_BASIC_AUTH || null, // 'username:password'
   },
