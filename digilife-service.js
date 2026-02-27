@@ -222,37 +222,19 @@ async function analyzePaymentProof(imageUrl) {
     }
     
     // Download image dan convert ke base64
-    let imageData;
-    try {
-      const response = await axios.get(imageUrl, { responseType: 'arraybuffer' });
-      imageData = Buffer.from(response.data).toString('base64');
-    } catch (downloadError) {
-      console.warn('⚠️ Could not download image from URL, using direct URL:', downloadError.message);
-      // Fallback: use URL directly with Gemini
-      const result = await gemini.generateContent([
-        {
-          text: `Analisa screenshot ini dengan DETAIL. Apakah ini bukti transfer/pembayaran bank?
-Jika YA, ekstrak SEMUA info: nama bank, nominal/amount, nomor rekening tujuan, nama penerima, waktu transfer, kode/referensi transfer, dan PRODUK YANG DIBELI (jika terlihat: Netflix, Spotify, YouTube, dll).
-Jika TIDAK, jawab "bukan bukti pembayaran".
-Format response sebagai JSON dengan key: is_payment_proof, bank_name, amount, account_number, recipient_name, transaction_time, product, status.`,
-          inlineData: {
-            mimeType: 'image/jpeg',
-            data: imageData || ''
-          }
-        }
-      ]);
-      return result.response.text();
-    }
-    
-    // Use Gemini Vision untuk analyze image
+    // Download image dari localhost → base64 (Gemini API tidak bisa akses localhost URL)
+    const imgResponse = await axios.get(imageUrl, { responseType: 'arraybuffer' });
+    const imageData = Buffer.from(imgResponse.data).toString('base64');
+    const mimeType = imgResponse.headers['content-type'] || 'image/jpeg';
+
+    // Gemini Vision — text dan inlineData HARUS jadi dua parts terpisah
     const result = await gemini.generateContent([
       {
-        text: `Analisa screenshot ini dengan DETAIL. Apakah ini bukti transfer/pembayaran bank?
-Jika YA, ekstrak SEMUA info: nama bank, nominal/amount, nomor rekening tujuan, nama penerima, waktu transfer, kode/referensi transfer, dan PRODUK YANG DIBELI (jika terlihat: Netflix, Spotify, YouTube, Amazon Prime, Disney, etc).
-Jika TIDAK, jawab "bukan bukti pembayaran".
-Format response sebagai JSON dengan key: is_payment_proof, bank_name, amount, account_number, recipient_name, transaction_time, product, status.`,
+        text: `Analisa screenshot ini dengan DETAIL. Apakah ini bukti transfer/pembayaran bank?\nJika YA, ekstrak SEMUA info: nama bank, nominal/amount, nomor rekening tujuan, nama penerima, waktu transfer, kode/referensi transfer, dan PRODUK YANG DIBELI (jika terlihat: Netflix, Spotify, YouTube, Amazon Prime, Disney, etc).\nJika TIDAK, jawab "bukan bukti pembayaran".\nFormat response sebagai JSON dengan key: is_payment_proof, bank_name, amount, account_number, recipient_name, transaction_time, product, status.`
+      },
+      {
         inlineData: {
-          mimeType: 'image/jpeg',
+          mimeType: mimeType,
           data: imageData
         }
       }
@@ -511,33 +493,32 @@ function buildPricingResponse(customerName, products, renewalReminder = null) {
 // Fungsi untuk OCR gambar menggunakan GPT-4o-mini Vision
 async function extractTextFromImage(imageUrl) {
   try {
-    console.log(`🖼️  Extracting text from image: ${imageUrl.substring(0, 50)}...`);
-    
-    const response = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'text',
-              text: 'Extract semua teks yang terlihat di gambar ini. Jika ada pertanyaan tentang produk digital subscription (Netflix, Spotify, YouTube Premium, dll), jelaskan konteksnya. Response dalam bahasa Indonesia.'
-            },
-            {
-              type: 'image_url',
-              image_url: {
-                url: imageUrl,
-                detail: 'low' // low = cheaper, cukup untuk text extraction
-              }
-            }
-          ]
+    console.log(`🖼️  Extracting text from image: ${imageUrl.substring(0, 60)}...`);
+
+    if (!gemini) {
+      console.warn('⚠️ Gemini not available for text extraction');
+      return '[Gambar diterima, tapi tidak bisa dibaca]';
+    }
+
+    // Download image dari localhost → base64 (Gemini API tidak bisa akses localhost URL)
+    const imgResponse = await axios.get(imageUrl, { responseType: 'arraybuffer' });
+    const imageData = Buffer.from(imgResponse.data).toString('base64');
+    const mimeType = imgResponse.headers['content-type'] || 'image/jpeg';
+
+    // Gemini Flash Vision — text dan inlineData HARUS jadi dua parts terpisah
+    const result = await gemini.generateContent([
+      {
+        text: 'Extract semua teks yang terlihat di gambar ini. Jika ada informasi pembayaran/transfer, sebutkan: nominal, nama penerima, bank, nomor rekening. Jika ada pertanyaan tentang produk digital subscription (Netflix, Spotify, YouTube Premium, dll), jelaskan konteksnya. Response dalam bahasa Indonesia.'
+      },
+      {
+        inlineData: {
+          mimeType: mimeType,
+          data: imageData
         }
-      ],
-      max_tokens: 500,
-      temperature: 0.3
-    });
-    
-    const extractedText = response.choices[0].message.content;
+      }
+    ]);
+
+    const extractedText = result.response.text();
     console.log(`   ✅ Extracted text: "${extractedText.substring(0, 100)}..."`);
     return extractedText;
   } catch (error) {
