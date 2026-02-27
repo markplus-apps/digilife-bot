@@ -1,0 +1,66 @@
+﻿version: '3.8'
+
+# =============================================================
+# GOWA Docker Compose - SINGLE VPS CONFIGURATION
+# Semua services (GOWA + digilife) berjalan di 1 VPS yang sama
+# GOWA berkomunikasi ke digilife via host.docker.internal:3005
+# =============================================================
+
+services:
+  gowa:
+    image: aldinokemal2104/go-whatsapp-web-multidevice:latest
+    container_name: digilife-gowa
+    restart: unless-stopped
+    ports:
+      - "3001:3000"  # Expose GOWA API on port 3001 of the VPS
+    volumes:
+      - gowa_storage:/app/storages
+    extra_hosts:
+      # Allows container to reach VPS localhost (needed on Linux)
+      - "host.docker.internal:host-gateway"
+    environment:
+      # Basic Configuration
+      APP_PORT: 3000
+      APP_HOST: 0.0.0.0
+      APP_DEBUG: "false"
+      APP_OS: "DigiLife-Bot"
+
+      # Database Configuration
+      # Uses the SAME PostgreSQL as digilife (saves cost, single instance)
+      # host.docker.internal resolves to VPS host IP from inside container
+      DB_URI: "${GOWA_DB_URI:-postgres://postgres:postgres@host.docker.internal:5432/digilife?sslmode=disable}"
+
+      # Webhook Configuration
+      # Sends incoming WhatsApp messages to digilife running on the same VPS
+      WHATSAPP_WEBHOOK: "http://host.docker.internal:${DIGILIFE_PORT:-3005}/api/webhook/gowa"
+      WHATSAPP_WEBHOOK_SECRET: "${GOWA_WEBHOOK_SECRET:-changeme}"
+      WHATSAPP_WEBHOOK_EVENTS: "message,message.ack,call.offer"
+      WHATSAPP_WEBHOOK_INSECURE_SKIP_VERIFY: "false"
+
+      # Auto Features
+      WHATSAPP_AUTO_MARK_READ: "true"
+      WHATSAPP_AUTO_DOWNLOAD_MEDIA: "true"
+      WHATSAPP_AUTO_REJECT_CALL: "true"
+
+      # Security
+      WHATSAPP_ACCOUNT_VALIDATION: "true"
+      WHATSAPP_PRESENCE_ON_CONNECT: "unavailable"
+
+      # Basic Auth untuk dashboard GOWA (ganti dengan password aman)
+      APP_BASIC_AUTH: "${GOWA_BASIC_AUTH:-admin:changeme}"
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  gowa_storage:
+    driver: local

@@ -128,13 +128,24 @@ graph TD
 
 ---
 
-## 📖 Read Next
+## 📖 Documentation
 
-- [Architecture Details](./ARCHITECTURE.md) - Deep dive into how it works
-- [Deployment Guide](./DEPLOYMENT.md) - How to deploy, maintain & troubleshoot
-- [PostgreSQL Guide](./POSTGRESQL.md) - Database schema & query reference
+### Core Documentation
+- **[Architecture Details](./ARCHITECTURE.md)** - System design & data flow
+- **[Deployment Guide](./DEPLOYMENT.md)** - VPS setup, PM2 management, troubleshooting
+- **[PostgreSQL Guide](./POSTGRESQL.md)** - Database schema & query reference
+
+### Development & Workflow
+- **[Git Workflow](./GIT-WORKFLOW.md)** - Development workflow, branching strategy, deployment scripts
+- **[GOWA Migration](./GOWA-MIGRATION.md)** - Fonnte → GOWA migration guide (cost savings!)
+
+### Quick Links
+- Need to deploy changes? → [GIT-WORKFLOW.md](./GIT-WORKFLOW.md#-deployment-workflow)
+- Want to migrate to GOWA? → [GOWA-MIGRATION.md](./GOWA-MIGRATION.md#-overview)
+- Database issues? → [POSTGRESQL.md](./POSTGRESQL.md)
+- Architecture questions? → [ARCHITECTURE.md](./ARCHITECTURE.md)
 
 ---
 
-**Last Updated:** 2026-02-25  
+**Last Updated:** 2026-02-27  
 **Status:** ✅ Production ready — 100% PostgreSQL, Fonnte gateway active

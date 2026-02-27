@@ -11,11 +11,29 @@ const { Pool } = require('pg');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 require('dotenv').config();
 
+// WhatsApp Provider Adapter (supports Fonnte via local gateway AND GOWA)
+// Switch provider: set WHATSAPP_PROVIDER='gowa' in .env, or via /api/admin/switch-provider
+const waAdapter = require('./gowa-implementation/adapter/whatsapp-adapter');
+
 const app = express();
 app.use(express.json());
 
 const PORT = process.env.PORT || 3001;
 const BOT_API_URL = process.env.BOT_API_URL || 'http://localhost:3010/send-message'; // Fixed: Bot runs on 3010, not 3000
+
+// Initialize WhatsApp adapter singleton
+waAdapter.initializeAdapter();
+
+/**
+ * Central function to send WhatsApp text messages.
+ * Routes through either Fonnte gateway (localhost:3010) or GOWA API (localhost:3001)
+ * depending on WHATSAPP_PROVIDER env var. Can be switched at runtime without restart.
+ * @param {string} chatId - WhatsApp JID e.g. '628128933008@s.whatsapp.net'
+ * @param {string} text   - Message text to send
+ */
+async function sendWAMessage(chatId, text) {
+  return await waAdapter.sendMessage(chatId, text);
+}
 
 // Admin config untuk payment confirmation
 const ADMIN_NUMBERS = (process.env.ADMIN_NUMBERS || '628128933008').split(',').map(n => n.trim());
@@ -406,6 +424,88 @@ function calculateProductConfidence(messageText, conversationHistory = []) {
   }
   
   return Math.min(confidence, 100);
+}
+
+// SMART FILTER 4: Detect vague questions and provide category overview instead of asking clarification
+function detectVagueQuestion(messageText, conversationHistory = []) {
+  const msg = messageText.toLowerCase().trim();
+  
+  // Very vague patterns that usually trigger annoying clarification
+  const vaguePatterns = [
+    /^mau tanya(?: dong)?$/i,
+    /^tanya(?: dong)?$/i,
+    /^ada apa aja\??$/i,
+    /^ada promo\??$/i,
+    /^promo apa\??$/i,
+    /^lagi promo\??$/i,
+    /^lagi ada promo\??$/i,
+    /^produk apa aja\??$/i,
+    /^apa aja\??$/i
+  ];
+  
+  return vaguePatterns.some(pattern => pattern.test(msg));
+}
+
+// Helper function: Build category overview response
+function buildCategoryOverview(customerName) {
+  return `Halo ${customerName ? 'Ka ' + customerName : 'ka'}! 👋
+
+Kita punya produk digital di kategori:
+
+🎬 *Streaming:* Netflix, YouTube Premium, Disney+ Hotstar
+🎵 *Music:* Spotify Premium, Apple Music
+💼 *Productivity:* Microsoft 365, Canva Pro, Adobe
+☁️ *Cloud Storage:* Google One, iCloud+
+
+Mau tanya tentang produk yang mana? 😊`;
+}
+
+// Helper function: Build pricing response WITHOUT LLM (accurate & fast)
+function buildPricingResponse(customerName, products, renewalReminder = null) {
+  if (!products || products.length === 0) {
+    return 'Maaf, produk yang ditanyakan tidak tersedia atau tidak ditemukan.';
+  }
+
+  let response = renewalReminder ? renewalReminder + '\n\n' : '';
+  
+  if (customerName) {
+    response += `Ka ${customerName}, berikut harga produk yang tersedia:\n\n`;
+  } else {
+    response += `Halo! Berikut harga produk yang tersedia:\n\n`;
+  }
+
+  // Group by product name for better formatting
+  const groupedByProduct = {};
+  products.forEach(p => {
+    if (!groupedByProduct[p.product]) {
+      groupedByProduct[p.product] = [];
+    }
+    groupedByProduct[p.product].push(p);
+  });
+
+  Object.entries(groupedByProduct).forEach(([productName, items]) => {
+    if (Object.keys(groupedByProduct).length > 1) {
+      response += `*${productName}:*\n`;
+    }
+    
+    items.forEach(item => {
+      if (item.price_normal > 0 && item.price_normal > item.price) {
+        // Ada promo
+        response += `- ${item.duration}: ~Rp ${item.price_normal.toLocaleString('id-ID')}~ *Rp ${item.price.toLocaleString('id-ID')}*\n`;
+      } else {
+        // Harga reguler
+        response += `- ${item.duration}: *Rp ${item.price.toLocaleString('id-ID')}*\n`;
+      }
+    });
+    
+    if (Object.keys(groupedByProduct).length > 1) {
+      response += `\n`;
+    }
+  });
+
+  response += `\nMau order atau info lebih lanjut? Hubungi admin ya! 😊`;
+  
+  return response;
 }
 
 // Fungsi untuk OCR gambar menggunakan GPT-4o-mini Vision
@@ -1692,10 +1792,7 @@ app.post('/inbound', async (req, res) => {
             
             const proofResponse = `Terima kasih ${customerDbName || senderName}! 🙏\n\nBukti transfer Anda sudah diterima:\n\n${proofDetails}\n\nAdmin akan segera verifikasi dan mengaktifkan langganan Anda.\nMohon tunggu konfirmasi dalam beberapa saat ya! ⏳`;
             
-            await axios.post(BOT_API_URL, {
-              to: chatJid,
-              text: proofResponse,
-            });
+            await sendWAMessage(chatJid, proofResponse);
             
             updateConversationHistory(phoneNumber, 'user', `[Sent IMAGE] ${senderName}`);
             updateConversationHistory(phoneNumber, 'assistant', proofResponse);
@@ -1724,6 +1821,7 @@ app.post('/inbound', async (req, res) => {
     const phoneNumber = (senderJid || '').split('@')[0].replace(':', '');
     const customerDbName = getFirstName(await lookupCustomerName(phoneNumber));
     let responseText = ''; // HARUS di awal sebelum ANY error bisa terjadi
+    let knowledgeContexts = []; // Initialize early to prevent undefined errors
 
     console.log(`📩 Incoming message from ${customerDbName || senderName} (${senderJid}): ${messageText}`);
 
@@ -1757,10 +1855,7 @@ app.post('/inbound', async (req, res) => {
         }
         
         // Send response to admin
-        await axios.post(BOT_API_URL, {
-          to: chatJid,
-          text: responseText,
-        });
+        await sendWAMessage(chatJid, responseText);
         
         return res.json({ success: true, message: 'Override command processed' });
       }
@@ -1777,22 +1872,13 @@ app.post('/inbound', async (req, res) => {
         
         if (typeof result === 'string') {
           // Error message
-          await axios.post(BOT_API_URL, {
-            to: chatJid,
-            text: result,
-          });
+          await sendWAMessage(chatJid, result);
         } else if (result.success) {
           // Send notification to customer
-          await axios.post(BOT_API_URL, {
-            to: result.customerJid,
-            text: result.message,
-          });
+          await sendWAMessage(result.customerJid, result.message);
           
           // Send confirmation to admin
-          await axios.post(BOT_API_URL, {
-            to: chatJid,
-            text: result.adminMessage,
-          });
+          await sendWAMessage(chatJid, result.adminMessage);
         }
         
         return res.json({ success: true, message: 'Admin command processed' });
@@ -1822,10 +1908,7 @@ app.post('/inbound', async (req, res) => {
       console.log(`⏸️  Customer deferring: "${trimmedMessage}"`);
       const deferResponse = `Baik ${customerDbName || senderName}, saya tunggu konfirmasi Anda nanti ya! 😊\n\nHubungi saya kapan saja jika sudah siap perpanjang. ✨`;
       
-      await axios.post(BOT_API_URL, {
-        to: chatJid,
-        text: deferResponse,
-      });
+      await sendWAMessage(chatJid, deferResponse);
       
       updateConversationHistory(phoneNumber, 'user', messageText);
       updateConversationHistory(phoneNumber, 'assistant', deferResponse);
@@ -1878,10 +1961,7 @@ Terima kasih sudah berminat berlangganan. Tim admin kami akan segera memproses p
 
 Mohon tunggu sebentar ya! 🙏`;
       
-      await axios.post(BOT_API_URL, {
-        to: chatJid,
-        text: deferMessage,
-      });
+      await sendWAMessage(chatJid, deferMessage);
       
       updateConversationHistory(phoneNumber, 'user', messageText);
       updateConversationHistory(phoneNumber, 'assistant', deferMessage);
@@ -1895,7 +1975,7 @@ Mohon tunggu sebentar ya! 🙏`;
     // const conversationHistory = await getConversationHistoryPG(phoneNumber); <-- REMOVED
 
     // Load knowledge contexts from Qdrant (with fallback to empty array)
-    let knowledgeContexts = [];
+    // Variable already declared at line ~1810
     try {
       knowledgeContexts = await searchKnowledge(messageText) || [];
     } catch (err) {
@@ -1911,6 +1991,22 @@ Mohon tunggu sebentar ya! 🙏`;
       badMomentum: badMomentum
     });
     console.log(`🎯 Intent detected:`, intent);
+
+    // FILTER 3: Detect vague questions and provide category overview (prevent annoying clarification)
+    if (detectVagueQuestion(trimmedMessage, conversationHistory)) {
+      console.log(`🎨 Vague question detected - providing category overview instead of clarification`);
+      
+      const customerName = isRegisteredCustomer ? (customerDbName || senderName) : senderName;
+      const categoryResponse = buildCategoryOverview(customerName);
+      
+      await sendWAMessage(chatJid, categoryResponse);
+      
+      updateConversationHistory(phoneNumber, 'user', messageText);
+      updateConversationHistory(phoneNumber, 'assistant', categoryResponse);
+      
+      console.log(`✅ Category overview sent to ${chatJid}`);
+      return res.json({ success: true, message: 'Category overview sent' });
+    }
 
     // Check if customer EXPLICITLY confirms renewal/extension (dengan strong intent)
     const confirmKeywords = ['iya perpanjang', 'mau perpanjang', 'perpanjang sekarang', 'iya lanjut', 'ok perpanjang', 'ya perpanjang', 'iya extend', 'mau bayar', 'bayar sekarang', 'bayarnya gimana', 'transfer kemana', 'rekening apa'];
@@ -1934,10 +2030,7 @@ Mohon tunggu sebentar ya! 🙏`;
 Setelah transfer, mohon konfirmasi ya! 🙏🏻`;
 
       // Send payment info immediately
-      await axios.post(BOT_API_URL, {
-        to: chatJid,
-        text: paymentInfo,
-      });
+      await sendWAMessage(chatJid, paymentInfo);
 
       // Also update conversation and respond
       updateConversationHistory(phoneNumber, 'user', messageText);
@@ -1976,51 +2069,42 @@ Setelah transfer, mohon konfirmasi ya! 🙏🏻`;
       }
     }
 
-    // Jika intent adalah price_inquiry → LANGSUNG ke GPT, jangan intercept dengan availability check
-    // Ini mencegah "berapa harga netflix?" dijawab dengan FULL/KOSONG
-    // HANYA untuk registered customer
-    else if (intent.intent === 'price_inquiry' && isRegisteredCustomer) {
-      console.log(`💰 Price inquiry detected → routing to GPT with full pricing data`);
-
-      // Build pricing context dari pricingData — filter by product jika intent.product diketahui
-      const productFilter = intent.product ? intent.product.toLowerCase() : null;
-      let pricingForContext = pricingData;
-      if (productFilter) {
-        const filtered = pricingData.filter(p =>
-          p.product.toLowerCase().includes(productFilter) ||
-          productFilter.includes(p.product.toLowerCase().split(' ')[0])
-        );
-        if (filtered.length > 0) pricingForContext = filtered;
-      }
-
-      const pricingContextContent = pricingForContext.map(p => {
-        const hargaPromo = `*Rp ${p.price.toLocaleString('id-ID')}*`;
-        if (p.price_normal > 0 && p.price_normal > p.price) {
-          const hargaNormal = `~Rp ${p.price_normal.toLocaleString('id-ID')}~`;
-          return `- ${p.product} ${p.duration}: ${hargaNormal} ${hargaPromo}`;
-        }
-        return `- ${p.product} ${p.duration}: ${hargaPromo}`;
-      }).join('\n');
-
-      const pricingKnowledge = {
-        category: 'PRICING',
-        topic: 'Daftar harga produk DigiLife',
-        content: pricingContextContent + '\n\n⚠️ Tampilkan dalam format bullet list dengan tanda "-". HANYA tampilkan entri di atas. Durasi yang tidak tercantum = tidak tersedia.',
-      };
-
-      // Check proactive renewal reminder untuk customer dengan langganan yang mau expired
-      const renewalReminder = await checkRenewalReminder(phoneNumber, intent.product);
-
-      const enrichedKnowledgeContexts = [pricingKnowledge, ...knowledgeContexts];
-      const priceResponse = await generateResponse(messageText, null, customerDbName || senderName, enrichedKnowledgeContexts, conversationHistory);
-      
-      // Prepend reminder jika ada
-      responseText = renewalReminder ? renewalReminder + priceResponse : priceResponse;
-    }
-
-    // Check untuk technical support requests (OTP, verifikasi, error login, dll)
+    // ⚠️ PRIORITY CHECK: Support keywords have highest priority (override other intents)
     const supportKeywords = ['otp', 'verif', 'verifikasi', 'kode', 'login error', 'password', 'lupa', 'reset', 'error', 'gagal', 'tidak bisa', 'masalah', 'kendala', 'sudah terkirim', 'sudah terima'];
     const isNeedingSupport = supportKeywords.some(kw => messageText.toLowerCase().includes(kw));
+
+    // Price inquiry - DIRECT TEMPLATE (NO LLM to prevent hallucination)
+    // Available for BOTH registered and non-registered (conversion opportunity!)
+    if (intent.intent === 'price_inquiry' && !isNeedingSupport) {
+      console.log(`💰 Price inquiry detected → using DIRECT TEMPLATE (no LLM)`);
+
+      // Stricter product filtering to avoid matching unrelated products
+      const productFilter = intent.product ? intent.product.toLowerCase() : null;
+      let pricingForContext = pricingData;
+      
+      if (productFilter) {
+        const filtered = pricingData.filter(p => {
+          const productLower = p.product.toLowerCase();
+          const firstWord = productLower.split(' ')[0];
+          
+          // Strict matching: product contains filter OR filter matches first word
+          return productLower.includes(productFilter) || firstWord === productFilter;
+        });
+        
+        if (filtered.length > 0) {
+          pricingForContext = filtered;
+        }
+      }
+
+      // Check proactive renewal reminder untuk registered customer dengan langganan yang mau expired
+      const renewalReminder = isRegisteredCustomer 
+        ? await checkRenewalReminder(phoneNumber, intent.product)
+        : null;
+
+      // Direct response building - NO LLM, 100% accurate
+      const customerName = isRegisteredCustomer ? (customerDbName || senderName) : senderName;
+      responseText = buildPricingResponse(customerName, pricingForContext, renewalReminder);
+    }
 
     // Availability check: hanya untuk pesan yang bukan price_inquiry/subscription_inquiry DAN hanya untuk registered customer
     // SKIP availability check untuk support requests - langsung ke LLM
@@ -2065,13 +2149,10 @@ Setelah transfer, mohon konfirmasi ya! 🙏🏻`;
     // Save conversation ke PostgreSQL (persistent)
     await saveConversationPG(phoneNumber, messageText, responseText);
 
-    // Kirim balasan via bot-1
-    await axios.post(BOT_API_URL, {
-      to: chatJid,
-      text: responseText,
-    });
+    // Kirim balasan via active provider (Fonnte or GOWA)
+    await sendWAMessage(chatJid, responseText);
 
-    console.log(`✅ Response sent to ${chatJid}`);
+    console.log(`✅ Response sent to ${chatJid} via ${waAdapter.getProviderInfo().provider}`);
     res.json({ success: true, message: 'Message processed and replied' });
 
   } catch (error) {
@@ -2197,6 +2278,98 @@ app.post('/admin/ingest-knowledge', async (req, res) => {
       success: false,
       error: `❌ Ingest failed: ${error.message}`
     });
+  }
+});
+
+// ============================================================
+// GOWA WEBHOOK ENDPOINT
+// Receives messages from GOWA when WHATSAPP_PROVIDER=gowa
+// GOWA sends a different payload format than Fonnte
+// ============================================================
+app.post('/api/webhook/gowa', async (req, res) => {
+  try {
+    const { event, data } = req.body;
+
+    // Only process text/image messages
+    if (!event || !['message'].includes(event)) {
+      return res.json({ success: true, message: 'Event ignored' });
+    }
+
+    if (!data || !data.from) {
+      return res.status(400).json({ success: false, message: 'Invalid GOWA payload' });
+    }
+
+    // Transform GOWA format → digilife /inbound format
+    const inboundPayload = {
+      from: data.from,           // '628128933008@s.whatsapp.net'  
+      message: data.body || '',  // text message body
+      sender: data.pushName || data.from.split('@')[0],
+      // Pass media info if present
+      ...(data.media && {
+        mediaUrl: data.media.url,
+        mimeType: data.media.mimeType,
+        mediaType: data.type,    // 'image', 'video', etc.
+      }),
+    };
+
+    // Self-call /inbound with transformed payload
+    const inboundResponse = await axios.post(
+      `http://localhost:${PORT}/inbound`,
+      inboundPayload
+    );
+
+    res.json(inboundResponse.data);
+  } catch (error) {
+    console.error('❌ GOWA webhook error:', error.message);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// ============================================================
+// ADMIN: WhatsApp Provider Management
+// ============================================================
+
+// Switch provider at runtime (no restart needed)
+app.post('/api/admin/switch-provider', (req, res) => {
+  try {
+    const { provider, adminPassword } = req.body;
+
+    if (adminPassword !== process.env.ADMIN_PASSWORD) {
+      return res.status(403).json({ success: false, error: 'Unauthorized' });
+    }
+
+    if (!['fonnte', 'gowa'].includes(provider)) {
+      return res.status(400).json({ success: false, error: 'Provider must be "fonnte" or "gowa"' });
+    }
+
+    waAdapter.switchProvider(provider);
+    console.log(`🔄 Provider switched to ${provider.toUpperCase()} by admin`);
+
+    res.json({
+      success: true,
+      message: `✅ WhatsApp provider switched to ${provider.toUpperCase()}`,
+      provider: provider,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Get current provider status
+app.get('/api/admin/provider-status', async (req, res) => {
+  try {
+    const info = waAdapter.getProviderInfo();
+    const status = await waAdapter.getStatus();
+
+    res.json({
+      success: true,
+      ...info,
+      ...status,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 

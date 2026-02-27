@@ -1,0 +1,50 @@
+version: '3.8'
+
+# =============================================================
+# GOWA Docker Compose - SINGLE VPS CONFIGURATION
+# Semua services berjalan di 1 VPS yang sama
+# GOWA -> digilife via host.docker.internal:3005
+# =============================================================
+
+services:
+  gowa:
+    image: aldinokemal2104/go-whatsapp-web-multidevice:latest
+    container_name: digilife-gowa
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    volumes:
+      - gowa_storage:/app/storages
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      APP_PORT: 3000
+      APP_HOST: 0.0.0.0
+      APP_DEBUG: "false"
+      APP_OS: "DigiLife-Bot"
+      DB_URI: "${GOWA_DB_URI:-postgres://postgres:postgres@host.docker.internal:5432/digilife?sslmode=disable}"
+      WHATSAPP_WEBHOOK: "http://host.docker.internal:${DIGILIFE_PORT:-3005}/api/webhook/gowa"
+      WHATSAPP_WEBHOOK_SECRET: "${GOWA_WEBHOOK_SECRET:-changeme}"
+      WHATSAPP_WEBHOOK_EVENTS: "message,message.ack,call.offer"
+      WHATSAPP_WEBHOOK_INSECURE_SKIP_VERIFY: "false"
+      WHATSAPP_AUTO_MARK_READ: "true"
+      WHATSAPP_AUTO_DOWNLOAD_MEDIA: "true"
+      WHATSAPP_AUTO_REJECT_CALL: "true"
+      WHATSAPP_ACCOUNT_VALIDATION: "true"
+      WHATSAPP_PRESENCE_ON_CONNECT: "unavailable"
+      APP_BASIC_AUTH: "${GOWA_BASIC_AUTH:-admin:changeme}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  gowa_storage:
+    driver: local

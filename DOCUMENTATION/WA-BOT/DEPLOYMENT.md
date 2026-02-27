@@ -409,13 +409,23 @@ const pgPool = new Pool({
 
 ---
 
-## 📖 Related Guides
+## 📖 Related Documentation
 
-- [Architecture](./ARCHITECTURE.md) - System design details
-- [PostgreSQL Guide](./POSTGRESQL.md) - Database details
+### Technical Guides
+- **[Architecture](./ARCHITECTURE.md)** - System design & data flow details
+- **[PostgreSQL Guide](./POSTGRESQL.md)** - Database schema & queries
+- **[Git Workflow](./GIT-WORKFLOW.md)** - Development workflow & deployment automation
+
+### Migration & Optimization
+- **[GOWA Migration](./GOWA-MIGRATION.md)** - Migrate from Fonnte to GOWA (save Rp 51M/5 years!)
+
+### Quick References
+- Automated deployment? → [GIT-WORKFLOW.md](./GIT-WORKFLOW.md#-helper-scripts)
+- Want to save costs? → [GOWA-MIGRATION.md](./GOWA-MIGRATION.md)
+- Database issues? → [POSTGRESQL.md](./POSTGRESQL.md)
 
 ---
 
-**Last Updated:** 2026-02-25  
-**Version:** 3.0 (Fonnte + PostgreSQL)  
+**Last Updated:** 2026-02-27  
+**Version:** 3.1 (Fonnte + PostgreSQL + Git Workflow)  
 **Level:** Intermediate
