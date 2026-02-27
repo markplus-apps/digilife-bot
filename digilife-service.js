@@ -2291,13 +2291,23 @@ app.post('/admin/ingest-knowledge', async (req, res) => {
 // ============================================================
 // GOWA WEBHOOK ENDPOINT
 // Receives messages from GOWA when WHATSAPP_PROVIDER=gowa
-// GOWA v8.3.0 webhook payload format:
-// { event: "message", data: { from, pushName, body, type, device_id, media: { url, mime_type } } }
 // ============================================================
 
-// Dedup cache: GOWA sometimes sends 2 webhooks per image (1st without image path, 2nd with)
-// We delay text-only webhooks briefly to let the image webhook supersede them
-const gowaProcessedIds = new Map(); // messageId → timestamp
+// Per-sender pending queue:
+// GOWA sends 2 webhooks per image — 1st has caption but no image, 2nd has image.
+// Strategy: hold any text-only message per sender for 4s; if an image from same
+// sender arrives within that window, cancel the text-only and process image instead.
+const gowaPendingSenders = new Map(); // senderJid → { timerId, resolve }
+
+function cancelPendingTextForSender(senderJid) {
+  if (gowaPendingSenders.has(senderJid)) {
+    const { timerId, resolve } = gowaPendingSenders.get(senderJid);
+    clearTimeout(timerId);
+    resolve('cancelled');
+    gowaPendingSenders.delete(senderJid);
+    console.log(`⏭️  GOWA: cancelled pending text-only for ${senderJid} (image arrived)`);
+  }
+}
 
 app.post('/api/webhook/gowa', async (req, res) => {
   try {
@@ -2332,11 +2342,11 @@ app.post('/api/webhook/gowa', async (req, res) => {
     //   payload.caption      → caption of image/video (if any)
     // -----------------------------------------------
     const gowaBaseUrl = process.env.GOWA_API_URL || 'http://localhost:3006';
+    const senderJid = payload.from;
 
     // Build full URL for media (relative path → absolute)
     let mediaUrl = null;
     if (payload.image) {
-      // "statics/media/xxx.jpg" → "http://localhost:3006/statics/media/xxx.jpg"
       mediaUrl = `${gowaBaseUrl}/${payload.image}`;
     } else if (payload.video) {
       mediaUrl = `${gowaBaseUrl}/${payload.video}`;
@@ -2344,27 +2354,21 @@ app.post('/api/webhook/gowa', async (req, res) => {
       mediaUrl = `${gowaBaseUrl}/${payload.audio}`;
     }
 
-    const messageId = payload.id;
-
-    // Clean expired dedup entries (older than 15s)
-    const nowMs = Date.now();
-    for (const [id, ts] of gowaProcessedIds.entries()) {
-      if (nowMs - ts > 15000) gowaProcessedIds.delete(id);
-    }
-
     if (mediaUrl) {
-      // This webhook HAS media — mark as processed so any text-only duplicate gets skipped
-      if (messageId) gowaProcessedIds.set(messageId, Date.now());
+      // IMAGE webhook arrived — cancel any pending text-only from same sender
+      cancelPendingTextForSender(senderJid);
     } else {
-      // This webhook has NO media (text-only or caption-only)
-      // GOWA often sends this BEFORE the image webhook — delay to let image webhook arrive first
-      if (messageId) {
-        await new Promise(r => setTimeout(r, 3000));
-        if (gowaProcessedIds.has(messageId)) {
-          console.log(`⏭️  GOWA webhook skipped (superseded by image webhook): ${messageId}`);
-          return res.json({ success: true, message: 'Superseded by image webhook' });
-        }
-        gowaProcessedIds.set(messageId, Date.now());
+      // TEXT-ONLY webhook — hold it 4s; if image arrives from same sender, this gets cancelled
+      const waited = await new Promise(resolve => {
+        const timerId = setTimeout(() => {
+          gowaPendingSenders.delete(senderJid);
+          resolve('proceed');
+        }, 4000);
+        gowaPendingSenders.set(senderJid, { timerId, resolve });
+      });
+
+      if (waited === 'cancelled') {
+        return res.json({ success: true, message: 'Text-only superseded by image webhook' });
       }
     }
 
