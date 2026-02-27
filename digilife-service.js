@@ -2294,6 +2294,11 @@ app.post('/admin/ingest-knowledge', async (req, res) => {
 // GOWA v8.3.0 webhook payload format:
 // { event: "message", data: { from, pushName, body, type, device_id, media: { url, mime_type } } }
 // ============================================================
+
+// Dedup cache: GOWA sometimes sends 2 webhooks per image (1st without image path, 2nd with)
+// We delay text-only webhooks briefly to let the image webhook supersede them
+const gowaProcessedIds = new Map(); // messageId → timestamp
+
 app.post('/api/webhook/gowa', async (req, res) => {
   try {
     console.log(`📩 GOWA webhook received:`, JSON.stringify(req.body, null, 2).substring(0, 400));
@@ -2337,6 +2342,30 @@ app.post('/api/webhook/gowa', async (req, res) => {
       mediaUrl = `${gowaBaseUrl}/${payload.video}`;
     } else if (payload.audio) {
       mediaUrl = `${gowaBaseUrl}/${payload.audio}`;
+    }
+
+    const messageId = payload.id;
+
+    // Clean expired dedup entries (older than 15s)
+    const nowMs = Date.now();
+    for (const [id, ts] of gowaProcessedIds.entries()) {
+      if (nowMs - ts > 15000) gowaProcessedIds.delete(id);
+    }
+
+    if (mediaUrl) {
+      // This webhook HAS media — mark as processed so any text-only duplicate gets skipped
+      if (messageId) gowaProcessedIds.set(messageId, Date.now());
+    } else {
+      // This webhook has NO media (text-only or caption-only)
+      // GOWA often sends this BEFORE the image webhook — delay to let image webhook arrive first
+      if (messageId) {
+        await new Promise(r => setTimeout(r, 1500));
+        if (gowaProcessedIds.has(messageId)) {
+          console.log(`⏭️  GOWA webhook skipped (superseded by image webhook): ${messageId}`);
+          return res.json({ success: true, message: 'Superseded by image webhook' });
+        }
+        gowaProcessedIds.set(messageId, Date.now());
+      }
     }
 
     // Text: combine caption + text (image may have caption as separate field)
