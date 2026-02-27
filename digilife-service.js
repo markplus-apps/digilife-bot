@@ -2289,53 +2289,62 @@ app.post('/admin/ingest-knowledge', async (req, res) => {
 // ============================================================
 app.post('/api/webhook/gowa', async (req, res) => {
   try {
-    console.log(`📩 GOWA webhook received:`, JSON.stringify(req.body, null, 2).substring(0, 300));
+    console.log(`📩 GOWA webhook received:`, JSON.stringify(req.body, null, 2).substring(0, 400));
 
-    const { event, data } = req.body;
+    const { event, payload } = req.body;
 
-    // Only process incoming text/image messages (ignore ack, call, etc.)
+    // Only process incoming messages (ignore ack, call.offer, etc.)
     if (!event || event !== 'message') {
       return res.json({ success: true, message: `Event '${event}' ignored` });
     }
 
-    if (!data || !data.from) {
-      return res.status(400).json({ success: false, message: 'Invalid GOWA payload: missing data.from' });
+    if (!payload || !payload.from) {
+      return res.status(400).json({ success: false, message: 'Invalid GOWA payload: missing payload.from' });
     }
 
     // Skip messages sent BY the bot (our own outgoing messages)
     const botJid = process.env.GOWA_BOT_JID || '62818135019@s.whatsapp.net';
-    if (data.from === botJid || data.from_me === true) {
+    if (payload.from === botJid || payload.from_me === true) {
       return res.json({ success: true, message: 'Own message ignored' });
     }
 
-    // Transform GOWA v8.3.0 format → digilife /inbound format
-    // GOWA media: data.media.url is WhatsApp CDN URL (may expire)
-    // GOWA also stores media locally at /app/storages/ via auto-download
-    // We expose local media via GOWA's own serve endpoint as fallback
+    // -----------------------------------------------
+    // GOWA v8.3.0 actual payload fields:
+    //   payload.from         → sender JID
+    //   payload.chat_id      → chat JID (group or individual)
+    //   payload.from_name    → sender display name
+    //   payload.text         → text message content
+    //   payload.image        → relative path e.g. "statics/media/xxx.jpg"
+    //   payload.video        → relative path for video
+    //   payload.audio        → relative path for audio
+    //   payload.caption      → caption of image/video (if any)
+    // -----------------------------------------------
+    const gowaBaseUrl = process.env.GOWA_API_URL || 'http://localhost:3006';
+
+    // Build full URL for media (relative path → absolute)
     let mediaUrl = null;
-    if (data.media && data.type !== 'text') {
-      // Try GOWA local serve URL first (more reliable than CDN URL)
-      // GOWA serves stored media at /media/{filename}
-      const mediaPath = data.media.path || data.media.local_path || null;
-      if (mediaPath) {
-        const filename = mediaPath.split('/').pop();
-        mediaUrl = `http://localhost:3006/media/${filename}`;
-      } else {
-        // Fallback: use original CDN URL (expires after ~5 min)
-        mediaUrl = data.media.url || null;
-      }
+    if (payload.image) {
+      // "statics/media/xxx.jpg" → "http://localhost:3006/statics/media/xxx.jpg"
+      mediaUrl = `${gowaBaseUrl}/${payload.image}`;
+    } else if (payload.video) {
+      mediaUrl = `${gowaBaseUrl}/${payload.video}`;
+    } else if (payload.audio) {
+      mediaUrl = `${gowaBaseUrl}/${payload.audio}`;
     }
 
+    // Text: combine caption + text (image may have caption as separate field)
+    const messageText = payload.caption || payload.text || '';
+
     const inboundPayload = {
-      senderJid: data.from,           // '628xxx@s.whatsapp.net'
-      chatJid: data.from,             // same for individual chats
-      senderName: data.pushName || data.from.split('@')[0],
-      text: data.body || '',
-      // Media fields
-      ...(mediaUrl && { imageUrl: mediaUrl, mimeType: data.media?.mime_type }),
+      senderJid: payload.from,
+      chatJid:   payload.chat_id || payload.from,
+      senderName: payload.from_name || payload.from.split('@')[0],
+      text: messageText,
+      // Media fields (picked up by /inbound image handler)
+      ...(mediaUrl && { imageUrl: mediaUrl, mimeType: payload.mime_type || 'image/jpeg' }),
     };
 
-    console.log(`📩 GOWA → /inbound: from=${inboundPayload.senderJid} text="${inboundPayload.text.substring(0, 50)}"`);
+    console.log(`📩 GOWA → /inbound: from=${inboundPayload.senderJid} text="${messageText.substring(0, 50)}" media=${mediaUrl ? '✅' : '❌'}`);
 
     // Forward to /inbound handler (same business logic for both Fonnte and GOWA)
     const inboundResponse = await axios.post(
