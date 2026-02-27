@@ -49,8 +49,8 @@ let gemini = null;
 if (geminiApiKey) {
   try {
     const googleAI = new GoogleGenerativeAI(geminiApiKey);
-    gemini = googleAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
-    console.log('✅ Google Gemini initialized for Vision OCR');
+    gemini = googleAI.getGenerativeModel({ model: 'gemini-2.5-flash-preview-04-17' });
+    console.log('✅ Google Gemini initialized for Vision OCR (gemini-2.5-flash-preview-04-17)');
   } catch (error) {
     console.error('⚠️ Gemini initialization error:', error.message);
     gemini = null;
