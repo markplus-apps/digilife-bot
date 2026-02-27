@@ -237,17 +237,19 @@ class WhatsAppAdapter {
         { headers }
       );
 
-      // Response: { code: 'SUCCESS', results: [ { device_id, status, jid, ... } ] }
+      // Response: { code: 'SUCCESS', results: [ { name, device } ] }
+      // GOWA v8.3.0: device in list = connected (no status field)
       const devices = response.data.results || response.data.data || [];
-      const device = devices.find(d => d.device_id === this.config.gowa.deviceId)
+      const device = devices.find(d => d.device === this.config.gowa.deviceId)
         || devices[0]; // fallback to first device
-      
+      const isConnected = response.data.code === 'SUCCESS' && !!device;
+
       return {
         provider: 'gowa',
         deviceId: this.config.gowa.deviceId,
-        isConnected: device?.status === 'connected',
-        status: device?.status || 'unknown',
-        phone: device?.jid,
+        isConnected,
+        status: isConnected ? 'connected' : 'disconnected',
+        phone: device?.name,
       };
     } catch (error) {
       return {
