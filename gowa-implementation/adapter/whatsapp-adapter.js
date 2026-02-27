@@ -22,10 +22,11 @@ const CONFIG = {
     baseUrl: process.env.BOT_API_URL || 'http://localhost:3010/send-message',
   },
   
-  // GOWA Configuration
+  // GOWA Configuration (v8.3.0)
+  // API uses X-Device-Id header for device routing
   gowa: {
-    baseUrl: process.env.GOWA_API_URL || 'http://localhost:3006/api',
-    sessionId: process.env.GOWA_SESSION_ID || 'default',
+    baseUrl: process.env.GOWA_API_URL || 'http://localhost:3006',
+    deviceId: process.env.GOWA_DEVICE_ID || '',  // from dashboard after login
     basicAuth: process.env.GOWA_BASIC_AUTH || null, // 'username:password'
   },
 };
@@ -167,22 +168,16 @@ class WhatsAppAdapter {
   // ========== GOWA IMPLEMENTATIONS ==========
 
   async _sendMessageGOWA(chatId, text) {
+    // GOWA v8.3.0: phone = JID format (628xxx@s.whatsapp.net)
     const payload = {
-      chatId: chatId,
-      text: text,
-      session: this.config.gowa.sessionId,
+      phone: chatId,   // JID format: 628xxx@s.whatsapp.net
+      message: text,
     };
 
-    const headers = { 'Content-Type': 'application/json' };
-    
-    // Add basic auth if configured
-    if (this.config.gowa.basicAuth) {
-      const [username, password] = this.config.gowa.basicAuth.split(':');
-      headers['Authorization'] = 'Basic ' + Buffer.from(`${username}:${password}`).toString('base64');
-    }
+    const headers = this._gowaHeaders();
 
     const response = await axios.post(
-      `${this.config.gowa.baseUrl}/send/message`,
+      `${this.config.gowa.baseUrl}/api/send/message`,
       payload,
       { headers }
     );
@@ -196,22 +191,18 @@ class WhatsAppAdapter {
   }
 
   async _sendImageGOWA(chatId, imageUrl, caption) {
-    const formData = new FormData();
-    formData.append('chatId', chatId);
-    formData.append('url', imageUrl); // GOWA expects 'url' for images
-    if (caption) formData.append('caption', caption);
-    formData.append('session', this.config.gowa.sessionId);
+    // GOWA v8.3.0: send image by URL
+    const payload = {
+      phone: chatId,
+      image_url: imageUrl,
+      caption: caption || '',
+    };
 
-    const headers = { 'Content-Type': 'multipart/form-data' };
-    
-    if (this.config.gowa.basicAuth) {
-      const [username, password] = this.config.gowa.basicAuth.split(':');
-      headers['Authorization'] = 'Basic ' + Buffer.from(`${username}:${password}`).toString('base64');
-    }
+    const headers = this._gowaHeaders();
 
     const response = await axios.post(
-      `${this.config.gowa.baseUrl}/send/image`,
-      formData,
+      `${this.config.gowa.baseUrl}/api/send/image`,
+      payload,
       { headers }
     );
     
@@ -223,25 +214,38 @@ class WhatsAppAdapter {
     };
   }
 
+  // Build GOWA headers (X-Device-Id + optional Basic Auth)
+  _gowaHeaders() {
+    const headers = {
+      'Content-Type': 'application/json',
+      'X-Device-Id': this.config.gowa.deviceId,
+    };
+    if (this.config.gowa.basicAuth) {
+      const [username, password] = this.config.gowa.basicAuth.split(':');
+      headers['Authorization'] = 'Basic ' + Buffer.from(`${username}:${password}`).toString('base64');
+    }
+    return headers;
+  }
+
   async _getStatusGOWA() {
     try {
-      const headers = {};
-      
-      if (this.config.gowa.basicAuth) {
-        const [username, password] = this.config.gowa.basicAuth.split(':');
-        headers['Authorization'] = 'Basic ' + Buffer.from(`${username}:${password}`).toString('base64');
-      }
+      const headers = this._gowaHeaders();
 
+      // GOWA v8.3.0: check device status
       const response = await axios.get(
-        `${this.config.gowa.baseUrl}/app/status`,
+        `${this.config.gowa.baseUrl}/api/app/devices`,
         { headers }
       );
+
+      const devices = response.data.data || [];
+      const device = devices.find(d => d.device_id === this.config.gowa.deviceId);
       
       return {
         provider: 'gowa',
-        isConnected: response.data.data?.status === 'connected',
-        status: response.data.data?.status || 'unknown',
-        phone: response.data.data?.phone,
+        deviceId: this.config.gowa.deviceId,
+        isConnected: device?.status === 'connected',
+        status: device?.status || 'unknown',
+        phone: device?.jid,
       };
     } catch (error) {
       return {

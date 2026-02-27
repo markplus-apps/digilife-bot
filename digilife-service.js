@@ -2284,35 +2284,46 @@ app.post('/admin/ingest-knowledge', async (req, res) => {
 // ============================================================
 // GOWA WEBHOOK ENDPOINT
 // Receives messages from GOWA when WHATSAPP_PROVIDER=gowa
-// GOWA sends a different payload format than Fonnte
+// GOWA v8.3.0 webhook payload format:
+// { event: "message", data: { from, pushName, body, type, device_id, media: { url, mime_type } } }
 // ============================================================
 app.post('/api/webhook/gowa', async (req, res) => {
   try {
+    console.log(`📩 GOWA webhook received:`, JSON.stringify(req.body, null, 2).substring(0, 300));
+
     const { event, data } = req.body;
 
-    // Only process text/image messages
-    if (!event || !['message'].includes(event)) {
-      return res.json({ success: true, message: 'Event ignored' });
+    // Only process incoming text/image messages (ignore ack, call, etc.)
+    if (!event || event !== 'message') {
+      return res.json({ success: true, message: `Event '${event}' ignored` });
     }
 
     if (!data || !data.from) {
-      return res.status(400).json({ success: false, message: 'Invalid GOWA payload' });
+      return res.status(400).json({ success: false, message: 'Invalid GOWA payload: missing data.from' });
     }
 
-    // Transform GOWA format → digilife /inbound format
+    // Skip messages sent BY the bot (our own outgoing messages)
+    const botJid = process.env.GOWA_BOT_JID || '62818135019@s.whatsapp.net';
+    if (data.from === botJid || data.from_me === true) {
+      return res.json({ success: true, message: 'Own message ignored' });
+    }
+
+    // Transform GOWA v8.3.0 format → digilife /inbound format
     const inboundPayload = {
-      from: data.from,           // '628128933008@s.whatsapp.net'  
-      message: data.body || '',  // text message body
-      sender: data.pushName || data.from.split('@')[0],
-      // Pass media info if present
-      ...(data.media && {
-        mediaUrl: data.media.url,
-        mimeType: data.media.mimeType,
-        mediaType: data.type,    // 'image', 'video', etc.
+      senderJid: data.from,           // '628xxx@s.whatsapp.net'
+      chatJid: data.from,             // same for individual chats
+      senderName: data.pushName || data.from.split('@')[0],
+      text: data.body || '',
+      // Media fields (GOWA puts media info in data.media)
+      ...(data.media && data.type !== 'text' && {
+        imageUrl: data.media.url,
+        mimeType: data.media.mime_type,
       }),
     };
 
-    // Self-call /inbound with transformed payload
+    console.log(`📩 GOWA → /inbound: from=${inboundPayload.senderJid} text="${inboundPayload.text.substring(0, 50)}"`);
+
+    // Forward to /inbound handler (same business logic for both Fonnte and GOWA)
     const inboundResponse = await axios.post(
       `http://localhost:${PORT}/inbound`,
       inboundPayload
