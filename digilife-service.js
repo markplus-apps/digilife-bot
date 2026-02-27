@@ -1756,10 +1756,22 @@ app.post('/inbound', async (req, res) => {
         try {
           const proofAnalysis = await analyzePaymentProof(mediaSource);
           
+          // Parse JSON string dari Gemini jika perlu
+          let proofParsed = proofAnalysis;
+          if (typeof proofAnalysis === 'string') {
+            try {
+              // Gemini kadang wrap dengan ```json ... ```
+              const cleaned = proofAnalysis.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+              proofParsed = JSON.parse(cleaned);
+            } catch (_) {
+              proofParsed = proofAnalysis; // tetap string jika gagal parse
+            }
+          }
+          
           // Check jika result adalah string (old format) atau object (new JSON format)
-          const isPaymentProof = typeof proofAnalysis === 'string' 
-            ? proofAnalysis.includes('BERHASIL') || proofAnalysis.includes('berhasil') || proofAnalysis.includes('transfer')
-            : proofAnalysis.is_payment_proof === true || proofAnalysis.is_payment_proof === 'true';
+          const isPaymentProof = typeof proofParsed === 'string' 
+            ? proofParsed.includes('BERHASIL') || proofParsed.includes('berhasil') || proofParsed.includes('transfer')
+            : proofParsed.is_payment_proof === true || proofParsed.is_payment_proof === 'true';
           
           if (isPaymentProof) {
             console.log(`✅ Payment proof detected via Gemini Vision!`);
@@ -1768,9 +1780,23 @@ app.post('/inbound', async (req, res) => {
             const phoneNumber = (senderJid || '').split('@')[0].replace(':', '');
             const customerDbName = getFirstName(await lookupCustomerName(phoneNumber));
             
-            // Format proof analysis response
-            let proofDetails = typeof proofAnalysis === 'string' ? proofAnalysis : JSON.stringify(proofAnalysis, null, 2);
-            
+            // Format proof analysis response (human-readable, bukan raw JSON)
+            let proofDetails = '';
+            if (typeof proofParsed === 'object' && proofParsed !== null) {
+              const p = proofParsed;
+              proofDetails = [
+                p.bank_name        ? `🏦 Bank: ${p.bank_name}` : null,
+                p.amount           ? `💰 Nominal: ${p.amount}` : null,
+                p.recipient_name   ? `👤 Penerima: ${p.recipient_name}` : null,
+                p.account_number   ? `🔢 Rekening: ${p.account_number}` : null,
+                p.transaction_time ? `🕐 Waktu: ${p.transaction_time}` : null,
+                p.product          ? `📦 Produk: ${p.product}` : null,
+                p.status           ? `✅ Status: ${p.status}` : null,
+              ].filter(Boolean).join('\n');
+            } else {
+              proofDetails = typeof proofParsed === 'string' ? proofParsed : '';
+            }
+
             const proofResponse = `Terima kasih ${customerDbName || senderName}! 🙏\n\nBukti transfer Anda sudah diterima:\n\n${proofDetails}\n\nAdmin akan segera verifikasi dan mengaktifkan langganan Anda.\nMohon tunggu konfirmasi dalam beberapa saat ya! ⏳`;
             
             await sendWAMessage(chatJid, proofResponse);
