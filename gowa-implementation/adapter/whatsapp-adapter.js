@@ -168,48 +168,48 @@ class WhatsAppAdapter {
   // ========== GOWA IMPLEMENTATIONS ==========
 
   async _sendMessageGOWA(chatId, text) {
-    // GOWA v8.3.0: phone = JID format (628xxx@s.whatsapp.net)
-    const payload = {
-      phone: chatId,   // JID format: 628xxx@s.whatsapp.net
-      message: text,
-    };
-
+    // GOWA v8.3.0:
+    // - Endpoint: /send/message (no /api prefix)
+    // - Phone: strip @s.whatsapp.net → use plain number '628xxx'
+    const phone = chatId.replace('@s.whatsapp.net', '').replace('@c.us', '');
+    const payload = { phone, message: text };
     const headers = this._gowaHeaders();
 
     const response = await axios.post(
-      `${this.config.gowa.baseUrl}/api/send/message`,
+      `${this.config.gowa.baseUrl}/send/message`,
       payload,
       { headers }
     );
     
     return {
       provider: 'gowa',
-      messageId: response.data.data?.message_id,
-      status: response.data.success ? 'success' : 'failed',
+      messageId: response.data.results?.message_id,
+      status: response.data.code === 'SUCCESS' ? 'success' : 'failed',
       timestamp: new Date(),
     };
   }
 
   async _sendImageGOWA(chatId, imageUrl, caption) {
     // GOWA v8.3.0: send image by URL
+    // - Endpoint: /send/image (no /api prefix)
+    const phone = chatId.replace('@s.whatsapp.net', '').replace('@c.us', '');
     const payload = {
-      phone: chatId,
+      phone,
       image_url: imageUrl,
       caption: caption || '',
     };
-
     const headers = this._gowaHeaders();
 
     const response = await axios.post(
-      `${this.config.gowa.baseUrl}/api/send/image`,
+      `${this.config.gowa.baseUrl}/send/image`,
       payload,
       { headers }
     );
     
     return {
       provider: 'gowa',
-      messageId: response.data.data?.message_id,
-      status: response.data.success ? 'success' : 'failed',
+      messageId: response.data.results?.message_id,
+      status: response.data.code === 'SUCCESS' ? 'success' : 'failed',
       timestamp: new Date(),
     };
   }
@@ -231,14 +231,16 @@ class WhatsAppAdapter {
     try {
       const headers = this._gowaHeaders();
 
-      // GOWA v8.3.0: check device status
+      // GOWA v8.3.0: GET /app/devices (no /api prefix)
       const response = await axios.get(
-        `${this.config.gowa.baseUrl}/api/app/devices`,
+        `${this.config.gowa.baseUrl}/app/devices`,
         { headers }
       );
 
-      const devices = response.data.data || [];
-      const device = devices.find(d => d.device_id === this.config.gowa.deviceId);
+      // Response: { code: 'SUCCESS', results: [ { device_id, status, jid, ... } ] }
+      const devices = response.data.results || response.data.data || [];
+      const device = devices.find(d => d.device_id === this.config.gowa.deviceId)
+        || devices[0]; // fallback to first device
       
       return {
         provider: 'gowa',
