@@ -1767,7 +1767,7 @@ app.post('/inbound', async (req, res) => {
 
     // PRIORITY 1: Jika ada gambar, FIRST cek apakah ini bukti transfer dengan Gemini
     if (mediaSource) {
-      messageType = imageUrl ? 'image' : (image || picture) ? 'image' : 'document';
+      messageType = imageUrl ? 'image' : image ? 'image' : 'document';
       console.log(`📩 Incoming ${messageType.toUpperCase()} from ${senderName} (${senderJid}) - URL: ${mediaSource.substring(0, 80)}...`);
       
       // FIRST: Check payment proof dengan Gemini sebelum text extraction
@@ -2309,16 +2309,30 @@ app.post('/api/webhook/gowa', async (req, res) => {
     }
 
     // Transform GOWA v8.3.0 format → digilife /inbound format
+    // GOWA media: data.media.url is WhatsApp CDN URL (may expire)
+    // GOWA also stores media locally at /app/storages/ via auto-download
+    // We expose local media via GOWA's own serve endpoint as fallback
+    let mediaUrl = null;
+    if (data.media && data.type !== 'text') {
+      // Try GOWA local serve URL first (more reliable than CDN URL)
+      // GOWA serves stored media at /media/{filename}
+      const mediaPath = data.media.path || data.media.local_path || null;
+      if (mediaPath) {
+        const filename = mediaPath.split('/').pop();
+        mediaUrl = `http://localhost:3006/media/${filename}`;
+      } else {
+        // Fallback: use original CDN URL (expires after ~5 min)
+        mediaUrl = data.media.url || null;
+      }
+    }
+
     const inboundPayload = {
       senderJid: data.from,           // '628xxx@s.whatsapp.net'
       chatJid: data.from,             // same for individual chats
       senderName: data.pushName || data.from.split('@')[0],
       text: data.body || '',
-      // Media fields (GOWA puts media info in data.media)
-      ...(data.media && data.type !== 'text' && {
-        imageUrl: data.media.url,
-        mimeType: data.media.mime_type,
-      }),
+      // Media fields
+      ...(mediaUrl && { imageUrl: mediaUrl, mimeType: data.media?.mime_type }),
     };
 
     console.log(`📩 GOWA → /inbound: from=${inboundPayload.senderJid} text="${inboundPayload.text.substring(0, 50)}"`);
