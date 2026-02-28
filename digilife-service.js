@@ -1733,6 +1733,12 @@ app.post('/inbound', async (req, res) => {
   try {
     const { senderJid, senderName, chatJid, text, imageUrl, media, isGroup, image, url, image_url } = req.body;
 
+    // Skip group messages — bot should only respond to direct/private chats
+    if (isGroup === true || (chatJid && chatJid.endsWith('@g.us'))) {
+      console.log(`⏭️  /inbound: skipped group message from ${senderJid} in ${chatJid}`);
+      return res.json({ success: true, message: 'Group message ignored' });
+    }
+
     let messageText = text || '';
     // Try multiple field names yang mungkin digunakan Fonnte
     const mediaSource = imageUrl || media || image || url || image_url || null;
@@ -2376,11 +2382,20 @@ app.post('/api/webhook/gowa', async (req, res) => {
     // Text: combine caption + text (image may have caption as separate field)
     const messageText = payload.caption || payload.text || '';
 
+    const chatJidGowa = payload.chat_id || payload.from;
+    const isGroupGowa = chatJidGowa.endsWith('@g.us');
+
+    if (isGroupGowa) {
+      console.log(`⏭️  GOWA: ignored group message from ${senderJid} in ${chatJidGowa}`);
+      return res.json({ success: true, message: 'Group message ignored' });
+    }
+
     const inboundPayload = {
       senderJid: payload.from,
-      chatJid:   payload.chat_id || payload.from,
+      chatJid:   chatJidGowa,
       senderName: payload.from_name || payload.from.split('@')[0],
       text: messageText,
+      isGroup: false,
       // Media fields (picked up by /inbound image handler)
       ...(mediaUrl && { imageUrl: mediaUrl, mimeType: payload.mime_type || 'image/jpeg' }),
     };
