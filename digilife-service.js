@@ -1966,21 +1966,8 @@ app.post('/inbound', async (req, res) => {
     const isNewSubsRequest = newSubsKeywords.some(kw => messageText.toLowerCase().includes(kw));
     
     if (isNewSubsRequest && !isRegisteredCustomer) {
-      console.log(`📝 New subscription request detected - deferring to admin`);
-      
-      const deferMessage = `Halo ${senderName}! 👋
-
-Terima kasih sudah berminat berlangganan. Tim admin kami akan segera memproses permintaan Anda.
-
-Mohon tunggu sebentar ya! 🙏`;
-      
-      await sendWAMessage(chatJid, deferMessage);
-      
-      updateConversationHistory(phoneNumber, 'user', messageText);
-      updateConversationHistory(phoneNumber, 'assistant', deferMessage);
-      
-      console.log(`✅ Deferred to admin for new subscription`);
-      return res.json({ success: true, message: 'Deferred to admin' });
+      console.log(`� Non-registered, new subs request → completely silent`);
+      return res.json({ success: true, message: 'Silenced: non-customer' });
     }
 
     // Get conversation history dari PostgreSQL (persistent) — load DULU sebelum extractIntent
@@ -2005,11 +1992,21 @@ Mohon tunggu sebentar ya! 🙏`;
     });
     console.log(`🎯 Intent detected:`, intent);
 
+    // GATE: Non-registered customer hanya boleh direspons jika menyebut nama produk (price_inquiry)
+    if (!isRegisteredCustomer && intent.intent !== 'price_inquiry') {
+      console.log(`🔇 Non-registered customer, intent=${intent.intent} → completely silent (no product trigger)`);
+      return res.json({ success: true, message: 'Silenced: non-customer without product trigger' });
+    }
+
     // FILTER 3: Detect vague questions and provide category overview (prevent annoying clarification)
     if (detectVagueQuestion(trimmedMessage, conversationHistory)) {
+      if (!isRegisteredCustomer) {
+        console.log(`🔇 Non-registered, vague question → completely silent`);
+        return res.json({ success: true, message: 'Silenced: non-customer' });
+      }
       console.log(`🎨 Vague question detected - providing category overview instead of clarification`);
       
-      const customerName = isRegisteredCustomer ? (customerDbName || senderName) : senderName;
+      const customerName = customerDbName || senderName;
       const categoryResponse = buildCategoryOverview(customerName);
       
       await sendWAMessage(chatJid, categoryResponse);
