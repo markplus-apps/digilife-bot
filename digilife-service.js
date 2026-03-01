@@ -292,29 +292,82 @@ async function saveConversationPG(phoneNumber, message, response) {
 
 // 1. Detect apakah message terlalu pendek dan tidak perlu response
 function shouldSkipShortMessage(messageText, conversationHistory = []) {
+  // Strip emoji dan whitespace untuk analisis teks murni
+  const stripped = messageText.replace(/[\u{1F000}-\u{1FFFF}\u{2600}-\u{27FF}\u{FE00}-\u{FEFF}]/gu, '').trim();
   const msg = messageText.toLowerCase().trim();
+  const msgClean = stripped.toLowerCase().trim();
   const msgLength = messageText.trim().length;
-  
+
+  // Jika hanya emoji (tanpa teks) → SKIP
+  if (stripped.trim().length === 0 && msgLength > 0) {
+    console.log(`⏸️  SKIP: Emoji-only message: "${messageText}"`);
+    return true;
+  }
+
   // Support keywords yang HARUS dijawab meskipun pendek
-  const supportKeywords = ['otp', 'error', 'problem', 'gagal', 'tidak bisa', 'masalah', 'bantuan', 'gimana', 'apa', 'caranya', 'bagaimana'];
-  const hasSupport = supportKeywords.some(kw => msg.includes(kw));
-  
-  // Jika < 5 karakter dan TIDAK ada support keywords → SKIP
-  if (msgLength < 5 && !hasSupport) {
-    console.log(`⏸️  SKIP: Short message <5 chars without support context: "${messageText}"`);
+  const supportKeywords = [
+    'otp', 'error', 'problem', 'gagal', 'tidak bisa', 'masalah', 'bantuan',
+    'gimana', 'caranya', 'bagaimana', 'kenapa', 'knp', 'gak bisa', 'gabisa',
+    'tolong', 'help', 'lupa', 'reset', 'login', 'verif', 'kode', 'ganti'
+  ];
+  const hasSupport = supportKeywords.some(kw => msgClean.includes(kw));
+  if (hasSupport) return false;
+
+  // Pertanyaan / inquiry keywords yang HARUS dijawab
+  const inquiryKeywords = [
+    'berapa', 'harga', 'mau', 'bisa', 'ada', 'produk', 'netflix', 'spotify',
+    'youtube', 'canva', 'microsoft', 'office', 'google', 'icloud', 'vidio',
+    'disney', 'hbo', 'mola', 'perpanjang', 'langganan', 'bayar', 'transfer',
+    'rekening', 'slot', 'tersedia', 'promo', 'diskon', 'paket'
+  ];
+  const hasInquiry = inquiryKeywords.some(kw => msgClean.includes(kw));
+  if (hasInquiry) return false;
+
+  // Jika < 4 karakter bersih → SKIP
+  if (msgClean.length < 4) {
+    console.log(`⏸️  SKIP: Too short (<4 chars clean): "${messageText}"`);
     return true;
   }
-  
-  // Jika hanya short acknowledgment ("ok", "oke", "tq", "mantap", "5", "baik") → SKIP
-  const silenceKeywords = ['ok', 'oke', 'tq', 'ok', 'ty', 'tyy', 'mantap', 'baik', 'siap', 'iya', 'yyy', 'yy', 'ya'];
-  const isAcknowledgment = silenceKeywords.includes(msg);
-  const isOnlyNumbers = /^[\d\s.,]+$/.test(messageText);
-  
-  if ((isAcknowledgment || isOnlyNumbers) && msgLength < 10) {
-    console.log(`⏸️  SKIP: Acknowledgment-only message: "${messageText}"`);
+
+  // Daftar kata/frasa acknowledgment yang harus didiamkan
+  const ackPatterns = [
+    // Setuju / konfirmasi singkat
+    /^(ok|oke|okay|okey|okee|oks|ok(e+)|oke(h+)|ok(l+)ah)[\s🙏👍😊]*$/i,
+    /^(sip|siap|siapp|sipp|sippp|sip(p+))[\s🙏👍😊]*$/i,
+    /^(iya|iyas|iyaa|iyah|ya(h?)|yap|yup|yups|yoi|yoii)[\s🙏👍😊]*$/i,
+    /^(baik|baikk|baiq|noted|noted\.?)[\s🙏👍😊]*$/i,
+    /^(mantap|mantapp|keren|bagus|sae)[\s🙏👍😊]*$/i,
+
+    // Terima kasih
+    /^(makasih|makasihh|makasi|mks|thanks|thank(s?)|thx|tq|ty|nuhun)[\s🙏👍😊]*$/i,
+    /^(terima kasih|terimakasih|trimakasih|trims)[\s🙏👍😊]*$/i,
+    /^(makasih (ya|kak|ka|om|kak|bro|sis|gan))[\s🙏👍😊]*$/i,
+
+    // Lanjut / konfirmasi tindakan
+    /^(lanjut|lanjutt|lanjutkan)[\s🙏👍😊]*$/i,
+    /^(done|selesai|beres|kelar)[\s🙏👍😊]*$/i,
+    /^(sudah|udah|udah (deh|bro|kak))[\s🙏👍😊]*$/i,
+
+    // Ekspresi pendek
+    /^(hehe|hehehe|wkwk|wkwkwk|hihi|😂|🤣|😅|😄)[\s]*$/i,
+    /^(aamiin|amiin|amin)[\s🙏]*$/i,
+
+    // "ok + nama" pendek seperti "ok kak", "oke om", "siap kak"
+    /^(ok|oke|okay|siap|sip|iya|ya|baik|noted)\s+(kak|ka|om|bro|sis|gan|min|deh|ya|yaa)[\s🙏👍]*$/i,
+  ];
+
+  const isAck = ackPatterns.some(p => p.test(msg));
+  if (isAck) {
+    console.log(`⏸️  SKIP: Acknowledgment message: "${messageText}"`);
     return true;
   }
-  
+
+  // Hanya angka → SKIP
+  if (/^[\d\s.,]+$/.test(stripped) && stripped.trim().length < 8) {
+    console.log(`⏸️  SKIP: Numbers-only short message: "${messageText}"`);
+    return true;
+  }
+
   return false;
 }
 
